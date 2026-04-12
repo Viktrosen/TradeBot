@@ -1,10 +1,10 @@
 plugins {
-    kotlin("jvm") version "2.3.20"
-    kotlin("plugin.spring") version "2.3.20"
-    id("org.springframework.boot") version "4.1.0-SNAPSHOT"
-    id("io.spring.dependency-management") version "1.1.7"
-    kotlin("plugin.jpa") version "2.2.20"
-    id("org.flywaydb.flyway") version "11.11.0"
+    kotlin("jvm") version "2.0.21"  // ← Исправлено: стабильная версия
+    kotlin("plugin.spring") version "2.0.21"  // ← Исправлено: стабильная версия
+    id("org.springframework.boot") version "3.3.5"  // ← Исправлено: стабильная версия вместо SNAPSHOT
+    id("io.spring.dependency-management") version "1.1.6"
+    kotlin("plugin.jpa") version "2.0.21"  // ← Исправлено: версия должна совпадать с kotlin
+    id("org.flywaydb.flyway") version "10.20.0"  // ← Исправлено: совместимая версия
 }
 
 group = "ru.bolotov"
@@ -19,7 +19,7 @@ java {
 
 repositories {
     mavenCentral()
-    maven { url = uri("https://repo.spring.io/snapshot") }
+    // maven { url = uri("https://repo.spring.io/snapshot") }  // ← Убрать, используем стабильные версии
 }
 
 dependencies {
@@ -32,18 +32,17 @@ dependencies {
 
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.8.1")
 
     implementation("ru.tinkoff.piapi:java-sdk-spring-boot-starter:1.31")
     implementation("ru.tinkoff.piapi:java-sdk-strategy:1.31")
 
-    // Если нужна работа с gRPC напрямую, добавьте эту зависимость
     implementation("io.grpc:grpc-netty-shaded:1.64.0")
 
-    implementation("org.postgresql:postgresql:42.7.5")
+    runtimeOnly("org.postgresql:postgresql")
     implementation("org.flywaydb:flyway-core")
-    implementation("org.flywaydb:flyway-database-postgresql")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
@@ -51,13 +50,20 @@ dependencies {
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
 
 kotlin {
     compilerOptions {
-        freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+        freeCompilerArgs.addAll("-Xjsr305=strict")
     }
+}
+
+flyway {
+    url = "jdbc:postgresql://tradebotbd-viktrosen.db-msk0.amvera.tech:5432/tradebot"
+    user = "tradebot_user"
+    password = "uN2-p9Q-jQv-YZF"
+    driver = "org.postgresql.Driver"  // ← Добавлено: явно указываем драйвер
 }
 
 tasks.withType<Test> {
