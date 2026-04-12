@@ -1,16 +1,13 @@
 meta:
-  environment: jvm
+  environment: docker
   toolchain:
-    name: gradle
-    version: "17"
+    name: docker
 build:
-  image: null
-  args: "./gradlew clean build -x test"  # ← Добавлено: сборка без тестов
-  artifacts:
-    build/libs/*.jar: /
+  dockerfile: Dockerfile
+  skip: false
 run:
-  persistenceMount: /data
   image: null
-  jarName: main.jar
-  containerPort: 80
-  servicePort: 80
+  command: null
+  args: null
+  persistenceMount: /data
+  containerPort: 7070,5432,9092
