@@ -10,4 +10,5 @@ run:
   command: null
   args: null
   persistenceMount: /data
-  containerPort: 7070,5432,9092
+  containerPort: 80  # Только порт приложения
+  servicePort: 80
