@@ -17,6 +17,16 @@ java {
     }
 }
 
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath("org.postgresql:postgresql:42.7.3")
+        classpath("org.flywaydb:flyway-database-postgresql:10.20.0")
+    }
+}
+
 repositories {
     mavenCentral()
     // maven { url = uri("https://repo.spring.io/snapshot") }  // ← Убрать, используем стабильные версии
