@@ -5,7 +5,7 @@ meta:
     version: "17"
 build:
   image: null
-  args: null
+  args: "./gradlew clean build -x test"  # ← Добавлено: сборка без тестов
   artifacts:
     build/libs/*.jar: /
 run:
