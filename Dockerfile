@@ -1,16 +1,14 @@
 FROM bellsoft/liberica-openjdk-debian:17 AS builder
 WORKDIR /application
 COPY . .
-# Даем права на выполнение gradlew
 RUN chmod +x gradlew
-# Сборка с Gradle (без тестов)
 RUN --mount=type=cache,target=/root/.gradle ./gradlew clean build -x test
 
 FROM bellsoft/liberica-openjre-debian:17 AS layers
 WORKDIR /application
-# Копируем собранный JAR
-COPY --from=builder /application/build/libs/*.jar app.jar
-# Извлекаем слои для оптимизации
+# Копируем ТОЛЬКО исполняемый bootJar (не plain)
+COPY --from=builder /application/build/libs/*-SNAPSHOT.jar app.jar
+# Извлекаем слои
 RUN java -Djarmode=layertools -jar app.jar extract
 
 FROM bellsoft/liberica-openjre-debian:17
