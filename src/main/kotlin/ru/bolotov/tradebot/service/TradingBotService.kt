@@ -4,16 +4,19 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.flow.callbackFlow
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.InstrumentFilterProperties
-import ru.bolotov.tradebot.domain.model.*
-import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
+import ru.bolotov.tradebot.domain.model.EventStatus
+import ru.bolotov.tradebot.domain.model.PortfolioSnapshot
+import ru.bolotov.tradebot.domain.model.TradeEvent
 import ru.bolotov.tradebot.domain.repository.PortfolioSnapshotRepository
 import ru.bolotov.tradebot.domain.repository.TradeEventRepository
-import ru.bolotov.tradebot.strategy.*
+import ru.bolotov.tradebot.strategy.MarketData
+import ru.bolotov.tradebot.strategy.MarketDataProvider
+import ru.bolotov.tradebot.strategy.OrderDirection
+import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
 import ru.tinkoff.piapi.contract.v1.MoneyValue
@@ -21,14 +24,14 @@ import ru.tinkoff.piapi.core.InvestApi
 import ru.tinkoff.piapi.core.OperationsService
 import ru.tinkoff.piapi.core.SandboxService
 import ru.tinkoff.piapi.core.UsersService
-import ru.tinkoff.piapi.core.stream.MarketDataStreamService
 import ru.tinkoff.piapi.core.stream.StreamProcessor
 import java.math.BigDecimal
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Consumer
+import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
 
-private val logger = KotlinLogging.logger {}
+val logger = KotlinLogging.logger {}
 
 data class OpenPosition(
     val positionId: String = java.util.UUID.randomUUID().toString(),
@@ -49,6 +52,7 @@ class TradingBotService(
     private val tradeEventRepository: TradeEventRepository,
     private val portfolioSnapshotRepository: PortfolioSnapshotRepository,
     private val eventPublisherService: EventPublisherService,
+    private val strategyConfigPersistenceService: StrategyConfigPersistenceService,
     private val operationsService: OperationsService,
     private val usersService: UsersService,
     private val sandboxService: SandboxService,
@@ -90,6 +94,30 @@ class TradingBotService(
         runBlocking {
             initializeAccount()
             selectInitialInstruments()
+            loadLastStrategyConfiguration()
+        }
+    }
+
+    private suspend fun loadLastStrategyConfiguration() {
+        try {
+            when (val config = strategyConfigPersistenceService.loadLastConfiguration()) {
+                is LoadedConfig.Simple -> {
+                    strategyManager.switchToSimpleStrategy(config.name)
+                    logger.info { "📂 Загружена сохранённая простая стратегия: ${config.name}" }
+                }
+                is LoadedConfig.Composite -> {
+                    strategyManager.switchToCompositeStrategy(config.weights)
+                    logger.info { "📂 Загружена сохранённая комбинированная стратегия с весами: ${config.weights}" }
+                }
+                null -> {
+                    logger.info { "📂 Нет сохранённой конфигурации, используется стратегия по умолчанию (Cross EMA)" }
+                    // Устанавливаем стратегию по умолчанию
+                    strategyManager.switchToSimpleStrategy("ema")
+                }
+            }
+        } catch (e: Exception) {
+            logger.error(e) { "❌ Ошибка загрузки конфигурации стратегии, используется по умолчанию" }
+            strategyManager.switchToSimpleStrategy("ema")
         }
     }
 
@@ -338,11 +366,13 @@ class TradingBotService(
 
     fun switchToSimpleStrategy(strategyName: String) {
         strategyManager.switchToSimpleStrategy(strategyName)
+        strategyConfigPersistenceService.saveSimpleStrategy(strategyName)
         logger.info { "Переключено на стратегию: $strategyName" }
     }
 
     fun switchToCompositeStrategy(weights: Map<String, Int>) {
         strategyManager.switchToCompositeStrategy(weights)
+        strategyConfigPersistenceService.saveCompositeStrategy(weights)
         logger.info { "Переключено на комбинированную стратегию с весами: $weights" }
     }
 
