@@ -70,10 +70,16 @@ kotlin {
 }
 
 flyway {
-    url = "jdbc:postgresql://tradebotbd-viktrosen.db-msk0.amvera.tech:5432/tradebot"
-    user = "tradebot_user"
-    password = "uN2-p9Q-jQv-YZF"
-    driver = "org.postgresql.Driver"  // ← Добавлено: явно указываем драйвер
+    val dbHost = System.getenv("DB_HOST") ?: "localhost"
+    val dbPort = System.getenv("DB_PORT") ?: "5432"
+    val dbName = System.getenv("DB_NAME") ?: "postgres"  // ← Изменить на postgres
+    val dbUser = System.getenv("DB_USERNAME") ?: "postgres"
+    val dbPassword = System.getenv("DB_PASSWORD") ?: "konoha"  // ← Изменить на konoha
+
+    url = "jdbc:postgresql://$dbHost:$dbPort/$dbName"
+    user = dbUser
+    password = dbPassword
+    driver = "org.postgresql.Driver"
 }
 
 tasks.withType<Test> {

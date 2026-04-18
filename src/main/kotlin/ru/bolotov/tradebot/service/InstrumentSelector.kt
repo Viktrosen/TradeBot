@@ -1,6 +1,9 @@
 package ru.bolotov.tradebot.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Component
 import ru.tinkoff.piapi.core.InstrumentsService
@@ -32,63 +35,77 @@ class InstrumentSelector(
         val allShares = instrumentsService.tradableSharesSync
         logger.info { "Получено ${allShares.size} доступных акций" }
 
-        var passedTradingStatus = 0
+        // ========== ОПТИМИЗАЦИЯ 1: Пакетная проверка статусов торговли ==========
+        val shareUids = allShares.map { it.uid }
+        val tradingStatuses = getTradingStatusesBatch(shareUids)
+
+        val tradableShares = allShares.filter { share ->
+            val isTradable = tradingStatuses[share.uid] ?: false
+            if (isTradable) {
+                logger.debug { "✅ ${share.ticker}: доступен для торговли через API" }
+            } else {
+                logger.debug { "❌ ${share.ticker}: НЕ доступен для торговли через API" }
+            }
+            isTradable
+        }
+
+        logger.info { "✅ Прошли проверку торговли: ${tradableShares.size} из ${allShares.size}" }
+
+        // ========== ОПТИМИЗАЦИЯ 2: Пакетное получение цен ==========
+        val prices = getCurrentPricesBatch(tradableShares.map { it.uid })
+
         var failedVolume = 0
         var failedVolatility = 0
         var otherErrors = 0
 
-        val selected = allShares
-            .filter { share ->
-                val tradable = isTradableViaApi(share.uid)
-                if (tradable) {
-                    passedTradingStatus++
-                    logger.debug { "✅ ${share.ticker}: доступен для торговли через API" }
-                } else {
-                    logger.debug { "❌ ${share.ticker}: НЕ доступен для торговли через API" }
-                }
-                tradable
-            }
-            .mapNotNull { share ->
-                try {
-                    val dailyVolume = getDailyVolume(share.uid)
-                    if (dailyVolume < minDailyVolume) {
-                        failedVolume++
-                        logger.debug { "📉 ${share.ticker}: объём $dailyVolume < $minDailyVolume - пропуск" }
-                        return@mapNotNull null
+        // ========== ОПТИМИЗАЦИЯ 3: Параллельный анализ инструментов ==========
+        val selected = coroutineScope {
+            tradableShares
+                .map { share ->
+                    async {
+                        try {
+                            val dailyVolume = getDailyVolume(share.uid)
+                            if (dailyVolume < minDailyVolume) {
+                                failedVolume++
+                                logger.debug { "📉 ${share.ticker}: объём $dailyVolume < $minDailyVolume - пропуск" }
+                                return@async null
+                            }
+                            logger.debug { "📊 ${share.ticker}: объём = $dailyVolume (OK)" }
+
+                            val volatility = calculateVolatility(share.uid, 30)
+                            if (volatility < minVolatility || volatility > maxVolatility) {
+                                failedVolatility++
+                                logger.debug { "📈 ${share.ticker}: волатильность ${String.format("%.2f", volatility)}% вне диапазона - пропуск" }
+                                return@async null
+                            }
+                            logger.debug { "🎯 ${share.ticker}: волатильность = ${String.format("%.2f", volatility)}% (OK)" }
+
+                            val price = prices[share.uid] ?: BigDecimal.ZERO
+                            logger.debug { "💰 ${share.ticker}: текущая цена = $price" }
+
+                            SelectedInstrument(
+                                uid = share.uid,
+                                ticker = share.ticker,
+                                name = share.name,
+                                dailyVolume = dailyVolume,
+                                volatility = volatility,
+                                price = price
+                            )
+                        } catch (e: Exception) {
+                            otherErrors++
+                            logger.error(e) { "❌ Ошибка анализа ${share.ticker}: ${e.message}" }
+                            null
+                        }
                     }
-                    logger.debug { "📊 ${share.ticker}: объём = $dailyVolume (OK)" }
-
-                    val volatility = calculateVolatility(share.uid, 30)
-                    if (volatility < minVolatility || volatility > maxVolatility) {
-                        failedVolatility++
-                        logger.debug { "📈 ${share.ticker}: волатильность ${String.format("%.2f", volatility)}% вне диапазона [$minVolatility-$maxVolatility] - пропуск" }
-                        return@mapNotNull null
-                    }
-                    logger.debug { "🎯 ${share.ticker}: волатильность = ${String.format("%.2f", volatility)}% (OK)" }
-
-                    val price = getCurrentPrice(share.uid)
-                    logger.debug { "💰 ${share.ticker}: текущая цена = $price" }
-
-                    SelectedInstrument(
-                        uid = share.uid,
-                        ticker = share.ticker,
-                        name = share.name,
-                        dailyVolume = dailyVolume,
-                        volatility = volatility,
-                        price = price
-                    )
-                } catch (e: Exception) {
-                    otherErrors++
-                    logger.error(e) { "❌ Ошибка анализа ${share.ticker}: ${e.message}" }
-                    null
                 }
-            }
-            .sortedByDescending { it.dailyVolume }
-            .take(maxCount)
+                .awaitAll()
+                .filterNotNull()
+                .sortedByDescending { it.dailyVolume }
+                .take(maxCount)
+        }
 
         // Итоговая статистика
         logger.info { "========== СТАТИСТИКА ОТБОРА ==========" }
-        logger.info { "✅ Прошли проверку торговли: $passedTradingStatus" }
         logger.info { "❌ Отсеяно по объёму: $failedVolume" }
         logger.info { "❌ Отсеяно по волатильности: $failedVolatility" }
         logger.info { "❌ Ошибки при анализе: $otherErrors" }
@@ -96,7 +113,6 @@ class InstrumentSelector(
 
         if (selected.isEmpty()) {
             logger.warn { "⚠️ НЕ ОТОБРАНО НИ ОДНОГО ИНСТРУМЕНТА! Проверьте настройки фильтрации." }
-            logger.warn { "Возможно, стоит уменьшить minDailyVolume или расширить диапазон волатильности." }
         } else {
             selected.forEachIndexed { index, instrument ->
                 logger.info { "  ${index + 1}. ${instrument.ticker} (${instrument.name}): цена=${instrument.price}, объём=${instrument.dailyVolume}, волатильность=${String.format("%.2f", instrument.volatility)}%" }
@@ -108,14 +124,44 @@ class InstrumentSelector(
         return selected
     }
 
-    private suspend fun isTradableViaApi(instrumentUid: String): Boolean {
+    /**
+     * Пакетное получение статусов торговли для списка инструментов
+     * ОДИН запрос вместо N запросов!
+     */
+    private fun getTradingStatusesBatch(instrumentUids: List<String>): Map<String, Boolean> {
         return try {
-            val status = marketDataService.getTradingStatusSync(instrumentUid)
-            delay(100.milliseconds)
-            status.apiTradeAvailableFlag && status.marketOrderAvailableFlag
+            val response = marketDataService.getTradingStatusesSync(instrumentUids)
+
+            response.tradingStatusesList.associate { status ->
+                status.instrumentUid to (status.apiTradeAvailableFlag && status.marketOrderAvailableFlag)
+            }
         } catch (e: Exception) {
-            logger.error(e) { "Ошибка проверки статуса торговли для $instrumentUid" }
-            false
+            logger.error(e) { "Ошибка пакетной проверки статусов торговли" }
+
+            // Fallback: возвращаем false для всех
+            instrumentUids.associateWith { false }
+        }
+    }
+
+    /**
+     * Пакетное получение текущих цен для списка инструментов
+     */
+    private suspend fun getCurrentPricesBatch(instrumentUids: List<String>): Map<String, BigDecimal> {
+        if (instrumentUids.isEmpty()) return emptyMap()
+
+        return try {
+            // Разбиваем на чанки по 300 (ограничение API)
+            instrumentUids.chunked(300).flatMap { chunk ->
+                val lastPrices = marketDataService.getLastPricesSync(chunk)
+                delay(100.milliseconds) // Небольшая задержка между чанками
+
+                lastPrices.map { price ->
+                    price.instrumentUid to quotationToBigDecimal(price.price)
+                }
+            }.toMap()
+        } catch (e: Exception) {
+            logger.error(e) { "Ошибка пакетного получения цен" }
+            emptyMap()
         }
     }
 
@@ -155,7 +201,6 @@ class InstrumentSelector(
                 return 0.0
             }
 
-            // Рассчитываем дневные доходности
             val returns = mutableListOf<Double>()
             for (i in 1 until candles.size) {
                 val prevClose = quotationToBigDecimal(candles[i - 1].close)
@@ -164,28 +209,15 @@ class InstrumentSelector(
                 returns.add(dailyReturn.toDouble())
             }
 
-            // Стандартное отклонение доходностей
             val mean = returns.average()
             val variance = returns.map { (it - mean) * (it - mean) }.average()
             val stdDev = Math.sqrt(variance)
-
-            // Годовая волатильность (умножаем на sqrt(252))
             val annualizedVol = stdDev * Math.sqrt(252.0)
 
             annualizedVol * 100
         } catch (e: Exception) {
             logger.error(e) { "Ошибка расчёта волатильности для $instrumentUid" }
             0.0
-        }
-    }
-
-    private suspend fun getCurrentPrice(instrumentUid: String): BigDecimal {
-        return try {
-            val lastPrices = marketDataService.getLastPricesSync(listOf(instrumentUid))
-            lastPrices.firstOrNull()?.let { quotationToBigDecimal(it.price) } ?: BigDecimal.ZERO
-        } catch (e: Exception) {
-            logger.error(e) { "Ошибка получения цены для $instrumentUid" }
-            BigDecimal.ZERO
         }
     }
 
