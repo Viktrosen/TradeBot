@@ -1,11 +1,14 @@
 package ru.bolotov.tradebot.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.StrategyConfig
 import ru.bolotov.tradebot.domain.model.StrategyType
 import ru.bolotov.tradebot.domain.repository.StrategyConfigRepository
 import java.time.Instant
+
+private val logger = KotlinLogging.logger {}
 
 @Service
 class StrategyConfigPersistenceService(

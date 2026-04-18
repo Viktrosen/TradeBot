@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Consumer
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
 
-val logger = KotlinLogging.logger {}
+private val logger = KotlinLogging.logger {}
 
 data class OpenPosition(
     val positionId: String = java.util.UUID.randomUUID().toString(),
