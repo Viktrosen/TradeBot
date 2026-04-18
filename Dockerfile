@@ -2,7 +2,8 @@ FROM bellsoft/liberica-openjdk-debian:17 AS builder
 WORKDIR /application
 COPY . .
 RUN chmod +x gradlew
-RUN --mount=type=cache,target=/root/.gradle ./gradlew clean build -x test
+# Убираем --mount и добавляем --no-daemon для корректного завершения
+RUN ./gradlew clean build -x test --no-daemon
 
 FROM bellsoft/liberica-openjre-debian:17 AS layers
 WORKDIR /application
