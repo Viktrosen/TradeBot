@@ -2,7 +2,7 @@ FROM bellsoft/liberica-openjdk-debian:17 AS builder
 WORKDIR /application
 COPY . .
 RUN chmod +x gradlew
-# Убираем --mount и добавляем --no-daemon для корректного завершения
+# Убираем --mount и добавляем --no-daemon
 RUN ./gradlew clean build -x test --no-daemon
 
 FROM bellsoft/liberica-openjre-debian:17 AS layers
