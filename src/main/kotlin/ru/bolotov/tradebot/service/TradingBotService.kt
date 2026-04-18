@@ -368,12 +368,23 @@ class TradingBotService(
         strategyManager.switchToSimpleStrategy(strategyName)
         strategyConfigPersistenceService.saveSimpleStrategy(strategyName)
         logger.info { "Переключено на стратегию: $strategyName" }
+        // Перезапускаем стрим, чтобы применить новую стратегию
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+            logger.info { "🔄 Стрим цен перезапущен с новой стратегией" }
+        }
     }
 
     fun switchToCompositeStrategy(weights: Map<String, Int>) {
         strategyManager.switchToCompositeStrategy(weights)
         strategyConfigPersistenceService.saveCompositeStrategy(weights)
         logger.info { "Переключено на комбинированную стратегию с весами: $weights" }
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+            logger.info { "🔄 Стрим цен перезапущен с новой стратегией" }
+        }
     }
 
     private suspend fun executeTrade(marketData: MarketData, signal: ru.bolotov.tradebot.strategy.Signal) {
