@@ -17,6 +17,7 @@ import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.StrategyManager
+import ru.bolotov.tradebot.strategy.TradingStrategy
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
 import ru.tinkoff.piapi.contract.v1.MoneyValue
@@ -46,7 +47,7 @@ data class OpenPosition(
 @Service
 class TradingBotService(
     private val marketDataProvider: MarketDataProvider,
-    private val investApi: InvestApi,  // ← Нужен для получения MarketDataStreamService
+    private val investApi: InvestApi,
     private val strategyManager: StrategyManager,
     private val orderExecutionService: OrderExecutionService,
     private val tradeEventRepository: TradeEventRepository,
@@ -78,15 +79,12 @@ class TradingBotService(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var accountId: String? = null
 
-    // Джобы для управления жизненным циклом
     private var priceStreamJob: Job? = null
     private var schedulerJob: Job? = null
 
-    // Параметры
-    private val stopLossPercent = 0.02   // 2% стоп-лосс
-    private val takeProfitPercent = 0.03 // 3% тейк-профит
+    private val stopLossPercent = 0.02
+    private val takeProfitPercent = 0.03
 
-    // Для дебаунса сигналов
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
     private val signalDebounceMs = 5000L
 
@@ -105,13 +103,16 @@ class TradingBotService(
                     strategyManager.switchToSimpleStrategy(config.name)
                     logger.info { "📂 Загружена сохранённая простая стратегия: ${config.name}" }
                 }
-                is LoadedConfig.Composite -> {
-                    strategyManager.switchToCompositeStrategy(config.weights)
-                    logger.info { "📂 Загружена сохранённая комбинированная стратегия с весами: ${config.weights}" }
+                is LoadedConfig.Voting -> {
+                    strategyManager.switchToVotingStrategy(config.weights)
+                    logger.info { "📂 Загружена сохранённая стратегия голосования: ${config.weights}" }
+                }
+                is LoadedConfig.Confirmation -> {
+                    strategyManager.switchToConfirmationStrategy(config.indicators)
+                    logger.info { "📂 Загружена сохранённая стратегия подтверждения: ${config.indicators}" }
                 }
                 null -> {
                     logger.info { "📂 Нет сохранённой конфигурации, используется стратегия по умолчанию (Cross EMA)" }
-                    // Устанавливаем стратегию по умолчанию
                     strategyManager.switchToSimpleStrategy("ema")
                 }
             }
@@ -248,9 +249,6 @@ class TradingBotService(
         }
     }
 
-    /**
-     * Обёртка для подписки на LastPrice через MarketDataStreamService
-     */
     private fun subscribeToLastPrices(instrumentUids: List<String>): Flow<LastPrice> = callbackFlow {
         val streamId = "trade_bot_stream_${System.currentTimeMillis()}"
         val streamService = investApi.marketDataStreamService
@@ -262,7 +260,11 @@ class TradingBotService(
         }
 
         val onErrorCallback = Consumer<Throwable> { error ->
-            logger.error(error) { "Ошибка стрима $streamId" }
+            if (error is io.grpc.StatusRuntimeException && error.status.code == io.grpc.Status.Code.CANCELLED) {
+                logger.debug { "Стрим $streamId отменён (ожидаемо)" }
+            } else {
+                logger.error(error) { "Ошибка стрима $streamId" }
+            }
             close(error)
         }
 
@@ -277,7 +279,7 @@ class TradingBotService(
                 subscription.unsubscribeLastPrices(instrumentUids)
                 subscription.cancel()
             } catch (e: Exception) {
-                logger.error(e) { "Ошибка при закрытии стрима $streamId" }
+                logger.debug(e) { "Ошибка при закрытии стрима $streamId (ожидаемо)" }
             }
         }
     }
@@ -324,19 +326,48 @@ class TradingBotService(
         )
 
         if (orderResult.success) {
-            val pnl = if (position.direction == DomainOrderDirection.BUY) {
-                (marketData.currentPrice - position.entryPrice) * BigDecimal.valueOf(position.quantity)
-            } else {
-                (position.entryPrice - marketData.currentPrice) * BigDecimal.valueOf(position.quantity)
-            }
+            val pnl = calculatePnl(position, marketData.currentPrice)
 
             logger.info { "✅ Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
 
             _openPositions.value = _openPositions.value - position.instrumentId
-            saveCloseEvent(marketData, position, pnl)
+            saveCloseEvent(marketData, position, pnl, "CLOSE")
             // eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
+        }
+    }
+
+    private suspend fun closePositionBySignal(position: OpenPosition, signal: ru.bolotov.tradebot.strategy.Signal) {
+        val marketData = marketDataProvider.fetchMarketData(position.instrumentId) ?: return
+
+        val directionStr = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
+        val orderResult = orderExecutionService.placeOrder(
+            accountId = accountId!!,
+            instrumentId = position.instrumentId,
+            quantity = position.quantity,
+            price = marketData.currentPrice,
+            direction = directionStr
+        )
+
+        if (orderResult.success) {
+            val pnl = calculatePnl(position, marketData.currentPrice)
+
+            logger.info { "✅ Позиция закрыта по сигналу: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
+
+            _openPositions.value = _openPositions.value - position.instrumentId
+            saveCloseEvent(marketData, position, pnl, "SIGNAL_CLOSE")
+            // eventPublisherService.publishPortfolioChanged()
+        } else {
+            logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
+        }
+    }
+
+    private fun calculatePnl(position: OpenPosition, closePrice: BigDecimal): BigDecimal {
+        return if (position.direction == DomainOrderDirection.BUY) {
+            (closePrice - position.entryPrice) * BigDecimal.valueOf(position.quantity)
+        } else {
+            (position.entryPrice - closePrice) * BigDecimal.valueOf(position.quantity)
         }
     }
 
@@ -367,48 +398,70 @@ class TradingBotService(
     fun switchToSimpleStrategy(strategyName: String) {
         strategyManager.switchToSimpleStrategy(strategyName)
         strategyConfigPersistenceService.saveSimpleStrategy(strategyName)
-        logger.info { "Переключено на стратегию: $strategyName" }
-        // Перезапускаем стрим, чтобы применить новую стратегию
+
         if (_isRunning.value) {
             priceStreamJob?.cancel()
             startPriceStream()
-            logger.info { "🔄 Стрим цен перезапущен с новой стратегией" }
         }
+
+        logger.info { "🔄 Стратегия переключена на: $strategyName, стрим перезапущен" }
     }
 
-    fun switchToCompositeStrategy(weights: Map<String, Int>) {
-        strategyManager.switchToCompositeStrategy(weights)
-        strategyConfigPersistenceService.saveCompositeStrategy(weights)
-        logger.info { "Переключено на комбинированную стратегию с весами: $weights" }
+    fun switchToVotingStrategy(weights: Map<String, Int>) {
+        strategyManager.switchToVotingStrategy(weights)
+        strategyConfigPersistenceService.saveVotingStrategy(weights)
+
         if (_isRunning.value) {
             priceStreamJob?.cancel()
             startPriceStream()
-            logger.info { "🔄 Стрим цен перезапущен с новой стратегией" }
         }
+
+        logger.info { "🔄 Стратегия переключена на голосование: $weights, стрим перезапущен" }
+    }
+
+    fun switchToConfirmationStrategy(requiredIndicators: List<String>) {
+        strategyManager.switchToConfirmationStrategy(requiredIndicators)
+        strategyConfigPersistenceService.saveConfirmationStrategy(requiredIndicators)
+
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+        }
+
+        logger.info { "🔄 Стратегия переключена на подтверждение: $requiredIndicators, стрим перезапущен" }
     }
 
     private suspend fun executeTrade(marketData: MarketData, signal: ru.bolotov.tradebot.strategy.Signal) {
-        val quantity = calculateDynamicQuantity(marketData.currentPrice)
-        val totalValue = marketData.currentPrice * BigDecimal.valueOf(quantity)
-
-        if (!hasEnoughFunds(totalValue)) {
-            logger.warn { "❌ Недостаточно средств для ${signal.direction} ${marketData.instrumentName}" }
-            return
-        }
-
         val currentPosition = _openPositions.value[marketData.instrumentId]
-
-        val shouldClose = when {
-            currentPosition == null -> false
-            currentPosition.direction == DomainOrderDirection.BUY && signal.direction == OrderDirection.SELL -> true
-            currentPosition.direction == DomainOrderDirection.SELL && signal.direction == OrderDirection.BUY -> true
-            else -> false
+        val signalDirection = when (signal.direction) {
+            OrderDirection.BUY -> DomainOrderDirection.BUY
+            OrderDirection.SELL -> DomainOrderDirection.SELL
+            OrderDirection.HOLD -> return
         }
 
-        if (shouldClose && currentPosition != null) {
-            closePosition(currentPosition)
-        } else if (currentPosition == null) {
-            openNewPosition(marketData, signal, quantity, totalValue)
+        when {
+            // Нет позиции — открываем новую
+            currentPosition == null -> {
+                val quantity = calculateDynamicQuantity(marketData.currentPrice)
+                val totalValue = marketData.currentPrice * BigDecimal.valueOf(quantity)
+
+                if (!hasEnoughFunds(totalValue)) {
+                    logger.warn { "❌ Недостаточно средств для ${signal.direction} ${marketData.instrumentName}" }
+                    return
+                }
+                openNewPosition(marketData, signal, quantity, totalValue)
+            }
+
+            // Сигнал ПРОТИВОПОЛОЖНЫЙ позиции — закрываем
+            currentPosition.direction != signalDirection -> {
+                logger.info { "🔄 Закрытие позиции по сигналу: ${currentPosition.direction} → ${signalDirection}" }
+                closePositionBySignal(currentPosition, signal)
+            }
+
+            // Сигнал совпадает с позицией — удерживаем
+            else -> {
+                logger.debug { "⏳ Сигнал ${signal.direction} совпадает с позицией — удерживаем" }
+            }
         }
     }
 
@@ -469,7 +522,7 @@ class TradingBotService(
         }
     }
 
-    private fun saveCloseEvent(data: MarketData, position: OpenPosition, pnl: BigDecimal) {
+    private fun saveCloseEvent(data: MarketData, position: OpenPosition, pnl: BigDecimal, reason: String) {
         val closeEvent = TradeEvent(
             instrumentId = data.instrumentId,
             instrumentName = data.instrumentName,
@@ -477,7 +530,7 @@ class TradingBotService(
             price = data.currentPrice,
             quantity = position.quantity,
             totalValue = data.currentPrice * BigDecimal.valueOf(position.quantity),
-            reason = "CLOSE",
+            reason = reason,
             explanation = "Закрытие позиции, P&L: $pnl ₽",
             status = EventStatus.PROCESSED,
             processedAt = Instant.now()
@@ -524,9 +577,10 @@ class TradingBotService(
         }
     }
 
-    fun getOpenPositionsList(): List<Map<String, Any>> {
+    fun getOpenPositions(): List<Map<String, Any>> {
         return _openPositions.value.values.map { position ->
             mapOf(
+                "positionId" to position.positionId,
                 "instrumentId" to position.instrumentId,
                 "instrumentName" to position.instrumentName,
                 "direction" to position.direction.name,
@@ -559,11 +613,7 @@ class TradingBotService(
                 )
 
                 if (orderResult.success) {
-                    val pnl = if (position.direction == DomainOrderDirection.BUY) {
-                        (marketData.currentPrice - position.entryPrice) * BigDecimal.valueOf(position.quantity)
-                    } else {
-                        (position.entryPrice - marketData.currentPrice) * BigDecimal.valueOf(position.quantity)
-                    }
+                    val pnl = calculatePnl(position, marketData.currentPrice)
 
                     results.add(mapOf(
                         "instrumentId" to instrumentId,
@@ -573,7 +623,7 @@ class TradingBotService(
                     ))
 
                     _openPositions.value = _openPositions.value - instrumentId
-                    saveCloseEvent(marketData, position, pnl)
+                    saveCloseEvent(marketData, position, pnl, "EMERGENCY_CLOSE")
                 } else {
                     results.add(mapOf("instrumentId" to instrumentId, "status" to "failed"))
                 }
@@ -612,25 +662,9 @@ class TradingBotService(
         }
     }
 
-    fun getOpenPositions(): List<Map<String, Any>> {
-        return _openPositions.value.values.map { position ->
-            mapOf(
-                "positionId" to position.positionId,
-                "instrumentId" to position.instrumentId,
-                "instrumentName" to position.instrumentName,
-                "direction" to position.direction.name,
-                "entryPrice" to position.entryPrice.toPlainString(),
-                "quantity" to position.quantity,
-                "entryTime" to position.entryTime.toString()
-            )
-        }
-    }
-
     fun getActiveInstruments(): List<String> = _activeInstruments.value
-
-
-    fun getStatus() = _isRunning.value
-    fun getCurrentStrategy() = strategyManager.getCurrentStrategy().name
+    fun getStatus(): Boolean = _isRunning.value
+    fun getCurrentStrategy(): TradingStrategy = strategyManager.getCurrentStrategy()
 }
 
 // Внутренние сигналы

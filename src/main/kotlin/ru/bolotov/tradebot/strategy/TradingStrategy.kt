@@ -9,6 +9,21 @@ interface TradingStrategy {
     fun getExplanation(data: MarketData): String
 }
 
+/**
+ * Конфигурируемая стратегия (может менять параметры)
+ */
+interface ConfigurableStrategy : TradingStrategy {
+    fun configure(config: StrategyConfiguration)
+}
+
+/**
+ * Конфигурация стратегии
+ */
+sealed class StrategyConfiguration {
+    data class Voting(val weights: Map<String, Int>) : StrategyConfiguration()
+    data class Confirmation(val requiredIndicators: List<String>) : StrategyConfiguration()
+}
+
 data class MarketData(
     val instrumentId: String,
     val instrumentName: String,
@@ -24,7 +39,12 @@ data class MarketData(
 
 data class Signal(
     val direction: OrderDirection,
-    val confidence: Double
-)
+    val confidence: Double,
+    val reason: String? = null
+) {
+    companion object {
+        val HOLD = Signal(OrderDirection.HOLD, 0.0, "Нет сигнала")
+    }
+}
 
 enum class OrderDirection { BUY, SELL, HOLD }

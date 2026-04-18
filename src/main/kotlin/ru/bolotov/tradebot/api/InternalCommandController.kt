@@ -7,11 +7,13 @@ import kotlinx.coroutines.runBlocking
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.bolotov.tradebot.service.TradingBotService
+import ru.bolotov.tradebot.strategy.StrategyManager
 
 @RestController
 @RequestMapping("/internal/command")
 class InternalCommandController(
-    private val tradingBotService: TradingBotService
+    private val tradingBotService: TradingBotService,
+    private val strategyManager: StrategyManager
 ) {
 
     @PostMapping("/start")
@@ -61,16 +63,40 @@ class InternalCommandController(
         )
     }
 
-    @PostMapping("/strategy/composite")
-    fun switchToCompositeStrategy(@RequestBody request: Map<String, Any>): ResponseEntity<Map<String, Any>> {
-        @Suppress("UNCHECKED_CAST")
-        val weights = request["weights"] as? Map<String, Int> ?: emptyMap()
-        tradingBotService.switchToCompositeStrategy(weights)
+    @PostMapping("/strategy/voting")
+    fun switchToVotingStrategy(@RequestBody request: Map<String, Int>): ResponseEntity<Map<String, Any>> {
+        tradingBotService.switchToVotingStrategy(request)
         return ResponseEntity.ok(
             mapOf(
                 "status" to "switched",
-                "strategy" to tradingBotService.getCurrentStrategy(),
-                "weights" to weights
+                "strategy" to tradingBotService.getCurrentStrategy().name,
+                "weights" to request
+            )
+        )
+    }
+
+    @PostMapping("/strategy/confirmation")
+    fun switchToConfirmationStrategy(@RequestBody request: Map<String, List<String>>): ResponseEntity<Map<String, Any>> {
+        val indicators = request["indicators"] ?: listOf("EMA", "RSI")
+        tradingBotService.switchToConfirmationStrategy(indicators)
+        return ResponseEntity.ok(
+            mapOf(
+                "status" to "switched",
+                "strategy" to tradingBotService.getCurrentStrategy().name,
+                "indicators" to indicators
+            )
+        )
+    }
+
+    @GetMapping("/strategy/available")
+    fun getAvailableStrategies(): ResponseEntity<Map<String, Any>> {
+        return ResponseEntity.ok(
+            mapOf(
+                "strategies" to strategyManager.getAvailableStrategies(),
+                "current" to mapOf(
+                    "name" to tradingBotService.getCurrentStrategy().name,
+                    "description" to tradingBotService.getCurrentStrategy().description
+                )
             )
         )
     }
