@@ -9,10 +9,21 @@ private val logger = KotlinLogging.logger {}
 class StrategyManager(
     private val crossEmaStrategy: CrossEmaStrategy,
     private val rsiStrategy: RsiStrategy,
+    private val macdStrategy: MacdStrategy,
+    private val bbStrategy: BollingerBandsStrategy,
     private val votingStrategy: VotingStrategy,
     private val confirmationStrategy: ConfirmationStrategy
 ) {
     private var currentStrategy: TradingStrategy = crossEmaStrategy
+
+    private val simpleStrategies = mapOf(
+        "ema" to crossEmaStrategy,
+        "cross_ema" to crossEmaStrategy,
+        "rsi" to rsiStrategy,
+        "macd" to macdStrategy,
+        "bb" to bbStrategy,
+        "bollinger" to bbStrategy
+    )
 
     fun getCurrentStrategy(): TradingStrategy = currentStrategy
 
@@ -29,6 +40,16 @@ class StrategyManager(
                 "type" to "simple"
             ),
             mapOf(
+                "name" to macdStrategy.name,
+                "description" to macdStrategy.description,
+                "type" to "simple"
+            ),
+            mapOf(
+                "name" to bbStrategy.name,
+                "description" to bbStrategy.description,
+                "type" to "simple"
+            ),
+            mapOf(
                 "name" to confirmationStrategy.name,
                 "description" to confirmationStrategy.description,
                 "type" to "confirmation"
@@ -42,15 +63,7 @@ class StrategyManager(
     }
 
     fun switchToSimpleStrategy(strategyName: String) {
-        currentStrategy = when (strategyName.lowercase()) {
-            "ema", "cross_ema" -> crossEmaStrategy
-            "rsi" -> rsiStrategy
-            "confirmation" -> confirmationStrategy
-            else -> {
-                logger.warn { "Неизвестная стратегия '$strategyName', используется EMA" }
-                crossEmaStrategy
-            }
-        }
+        currentStrategy = simpleStrategies[strategyName.lowercase()] ?: crossEmaStrategy
         logger.info { "🔄 Переключено на стратегию: ${currentStrategy.name}" }
     }
 

@@ -8,13 +8,15 @@ private val logger = KotlinLogging.logger {}
 @Component
 class VotingStrategy(
     private val crossEmaStrategy: CrossEmaStrategy,
-    private val rsiStrategy: RsiStrategy
+    private val rsiStrategy: RsiStrategy,
+    private val macdStrategy: MacdStrategy,
+    private val bbStrategy: BollingerBandsStrategy
 ) : ConfigurableStrategy {
 
     override var name = "Voting"
     override var description = "Голосование с весами"
 
-    private var weights: Map<String, Int> = mapOf("EMA" to 3, "RSI" to 2)
+    private var weights: Map<String, Int> = mapOf("EMA" to 3, "RSI" to 2, "MACD" to 2, "BB" to 2)
 
     override fun configure(config: StrategyConfiguration) {
         when (config) {
@@ -55,6 +57,28 @@ class VotingStrategy(
             explanations.add("RSI: ${rsiSignal.direction}")
         }
 
+        // MACD
+        val macdSignal = macdStrategy.analyze(data)
+        when (macdSignal.direction) {
+            OrderDirection.BUY -> buyScore += weights["MACD"] ?: 0
+            OrderDirection.SELL -> sellScore += weights["MACD"] ?: 0
+            else -> {}
+        }
+        if (macdSignal.direction != OrderDirection.HOLD) {
+            explanations.add("MACD: ${macdSignal.direction}")
+        }
+
+        // Bollinger Bands
+        val bbSignal = bbStrategy.analyze(data)
+        when (bbSignal.direction) {
+            OrderDirection.BUY -> buyScore += weights["BB"] ?: 0
+            OrderDirection.SELL -> sellScore += weights["BB"] ?: 0
+            else -> {}
+        }
+        if (bbSignal.direction != OrderDirection.HOLD) {
+            explanations.add("BB: ${bbSignal.direction}")
+        }
+
         return when {
             buyScore > sellScore -> Signal(
                 direction = OrderDirection.BUY,
@@ -73,15 +97,14 @@ class VotingStrategy(
     override fun getExplanation(data: MarketData): String {
         return buildString {
             append("🧠 Комбинированная стратегия (веса: $weights)\n\n")
-            append("📈 Анализ по стратегии Cross EMA\n\n")
-            append(crossEmaStrategy.getExplanation(data))
-            append("\n\n")
-            append("📊 Анализ по стратегии RSI\n\n")
-            append(rsiStrategy.getExplanation(data))
-            append("\n\n")
+            append("📈 Cross EMA\n\n${crossEmaStrategy.getExplanation(data)}\n\n")
+            append("📊 RSI\n\n${rsiStrategy.getExplanation(data)}\n\n")
+            append("📉 MACD\n\n${macdStrategy.getExplanation(data)}\n\n")
+            append("📏 Bollinger Bands\n\n${bbStrategy.getExplanation(data)}\n\n")
 
             val signal = analyze(data)
-            append("Итоговое решение: ${signal.direction}")
+            append("🎯 Итоговое решение: ${signal.direction}")
+            signal.reason?.let { append(" ($it)") }
         }
     }
 }

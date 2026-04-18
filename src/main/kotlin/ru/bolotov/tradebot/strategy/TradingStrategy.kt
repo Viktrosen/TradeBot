@@ -28,13 +28,30 @@ data class MarketData(
     val instrumentId: String,
     val instrumentName: String,
     val currentPrice: BigDecimal,
-    val ema5: BigDecimal? = null,
-    val ema21: BigDecimal? = null,
-    val rsi: Double? = null,
+    val ema5: BigDecimal?,
+    val ema21: BigDecimal?,
+    val rsi: Double?,
+    val macd: MacdData?,
+    val bollingerBands: BollingerBandsData?,
     val volume: Long,
     val avgVolume: Long,
     val spread: BigDecimal,
     val volatility: Double
+)
+
+data class MacdData(
+    val macdLine: BigDecimal,
+    val signalLine: BigDecimal,
+    val histogram: BigDecimal,
+    val isPositive: Boolean  // MACD > 0
+)
+
+data class BollingerBandsData(
+    val upperBand: BigDecimal,
+    val middleBand: BigDecimal,
+    val lowerBand: BigDecimal,
+    val bandwidth: BigDecimal,  // (upper - lower) / middle * 100
+    val percentB: Double        // (price - lower) / (upper - lower) — позиция цены внутри канала (0-1)
 )
 
 data class Signal(
