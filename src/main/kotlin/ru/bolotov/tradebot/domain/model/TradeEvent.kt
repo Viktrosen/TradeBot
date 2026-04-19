@@ -6,7 +6,7 @@ import java.time.Instant
 import java.util.UUID
 
 @Entity
-@Table(name = "trade_event")
+@Table(name = "trade_events")
 data class TradeEvent(
     @Id
     var id: String = UUID.randomUUID().toString(),
