@@ -32,7 +32,10 @@ class TradeEvent(
     @Enumerated(EnumType.STRING)
     var status: EventStatus = EventStatus.PENDING,
 
-    var processedAt: Instant? = null
+    var processedAt: Instant? = null,
+
+    @Column(name = "pnl", precision = 20, scale = 2)
+    var pnl: BigDecimal? = null,
 )
 
 enum class OrderDirection { BUY, SELL }

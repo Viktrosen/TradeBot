@@ -478,6 +478,7 @@ class TradingBotService(
             instrumentName = marketData.instrumentName,
             direction = direction,
             price = marketData.currentPrice,
+            pnl = null,
             quantity = quantity,
             totalValue = totalValue,
             reason = strategyManager.getCurrentStrategy().name,
@@ -531,6 +532,7 @@ class TradingBotService(
             quantity = position.quantity,
             totalValue = data.currentPrice * BigDecimal.valueOf(position.quantity),
             reason = reason,
+            pnl = pnl,
             explanation = "Закрытие позиции, P&L: $pnl ₽",
             status = EventStatus.PROCESSED,
             processedAt = Instant.now()
