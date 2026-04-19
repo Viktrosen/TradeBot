@@ -1,12 +1,13 @@
 package ru.bolotov.tradebot.config
 
+import jakarta.annotation.PostConstruct
 import org.springframework.stereotype.Component
 import ru.bolotov.tradebot.service.RiskConfigPersistenceService
 import java.util.concurrent.atomic.AtomicReference
 
 @Component
 class PositionSizingConfig(
-    private val persistenceService: RiskConfigPersistenceService  // Опционально
+    private val persistenceService: RiskConfigPersistenceService
 ) {
 
     private val _riskPerTrade = AtomicReference(0.02)
@@ -51,9 +52,26 @@ class PositionSizingConfig(
             _maxPositions.set(value)
         }
 
+    @PostConstruct
+    fun init() {
+        val saved = persistenceService.loadConfig()
+        if (saved != null) {
+            _riskPerTrade.set(saved.riskPerTrade)
+            _maxCapitalUsage.set(saved.maxCapitalUsage)
+            _maxPositionSize.set(saved.maxPositionSize)
+            _minPositionSize.set(saved.minPositionSize)
+            _maxPositions.set(saved.maxPositions)
+        }
+    }
 
     fun persist() {
-        persistenceService?.saveConfig()
+        persistenceService.saveConfig(
+            riskPerTrade = riskPerTrade,
+            maxCapitalUsage = maxCapitalUsage,
+            maxPositionSize = maxPositionSize,
+            minPositionSize = minPositionSize,
+            maxPositions = maxPositions
+        )
     }
 
     fun toMap(): Map<String, Any> = mapOf(
