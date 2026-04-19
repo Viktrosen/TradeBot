@@ -6,6 +6,12 @@ import ru.bolotov.tradebot.domain.model.TradeEvent
 import java.time.Instant
 
 interface TradeEventRepository : JpaRepository<TradeEvent, String> {
-    fun findByStatus(status: EventStatus): List<TradeEvent>
-    fun findByTimestampBetween(start: Instant, end: Instant): List<TradeEvent>
+
+    fun findByInstrumentId(instrumentId: String): List<TradeEvent>
+
+    fun findByStatus(status: ru.bolotov.tradebot.domain.model.EventStatus): List<TradeEvent>
+
+    fun findByCreatedAtBetween(start: Instant, end: Instant): List<TradeEvent>  // ← ИСПРАВЛЕНО
+
+    fun findByEventType(eventType: ru.bolotov.tradebot.domain.model.EventType): List<TradeEvent>
 }
