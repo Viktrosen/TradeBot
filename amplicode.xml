@@ -3,7 +3,7 @@
   <component name="AmplicodeDatabaseMigrationSettings" lastSelectedDirectory="src\main\resources\db\migration" />
   <component name="AmplicodePersistenceUnitSettings">
     <persistence-units>
-      <persistence-unit name="Default" defaultSearchScope="Project">
+      <persistence-unit moduleName="TradeBot.main" name="Default" defaultSearchScope="Project">
         <packages>
           <package value="ru.bolotov.tradebot" />
         </packages>
