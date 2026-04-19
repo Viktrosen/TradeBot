@@ -6,6 +6,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.service.TradingBotService
 import ru.bolotov.tradebot.strategy.StrategyManager
 
@@ -13,8 +14,11 @@ import ru.bolotov.tradebot.strategy.StrategyManager
 @RequestMapping("/internal/command")
 class InternalCommandController(
     private val tradingBotService: TradingBotService,
-    private val strategyManager: StrategyManager
+    private val strategyManager: StrategyManager,
+    private val config: PositionSizingConfig
 ) {
+
+    // ==================== БОТ ====================
 
     @PostMapping("/start")
     fun start(): ResponseEntity<Map<String, Any>> {
@@ -50,6 +54,8 @@ class InternalCommandController(
             )
         )
     }
+
+    // ==================== СТРАТЕГИИ ====================
 
     @PostMapping("/strategy/simple")
     fun switchToSimpleStrategy(@RequestBody request: Map<String, String>): ResponseEntity<Map<String, Any>> {
@@ -101,6 +107,8 @@ class InternalCommandController(
         )
     }
 
+    // ==================== ИНСТРУМЕНТЫ ====================
+
     @PostMapping("/instruments")
     fun updateInstruments(@RequestBody request: Map<String, List<String>>): ResponseEntity<Map<String, Any>> {
         val instruments = request["instruments"] ?: emptyList()
@@ -113,7 +121,30 @@ class InternalCommandController(
         )
     }
 
-    //Аварийное закрытие всех позиций
+    @PostMapping("/instruments/filters")
+    fun updateInstrumentFilters(@RequestBody request: InstrumentFiltersRequest): ResponseEntity<Map<String, Any>> {
+        tradingBotService.updateInstrumentFilters(
+            minDailyVolume = request.minDailyVolume,
+            minVolatility = request.minVolatility,
+            maxVolatility = request.maxVolatility,
+            maxCount = request.maxCount
+        )
+        return ResponseEntity.ok(mapOf("status" to "updated", "filters" to request))
+    }
+
+    // ==================== ПОЗИЦИИ ====================
+
+    @GetMapping("/positions")
+    fun getOpenPositions(): ResponseEntity<Map<String, Any>> {
+        val positions = tradingBotService.getOpenPositions()
+        return ResponseEntity.ok(
+            mapOf(
+                "openPositions" to positions,
+                "count" to positions.size
+            )
+        )
+    }
+
     @PostMapping("/close-all")
     fun closeAllPositions(): ResponseEntity<Map<String, Any>> {
         return try {
@@ -138,27 +169,86 @@ class InternalCommandController(
         }
     }
 
-    // Дополнительный эндпоинт для просмотра открытых позиций
-    @GetMapping("/positions")
-    fun getOpenPositions(): ResponseEntity<Map<String, Any>> {
-        val positions = tradingBotService.getOpenPositions()
+    // ==================== УПРАВЛЕНИЕ РИСКАМИ ====================
+
+    @GetMapping("/risk")
+    fun getRiskConfig(): ResponseEntity<Map<String, Any>> {
         return ResponseEntity.ok(
             mapOf(
-                "openPositions" to positions,
-                "count" to positions.size
+                "success" to true,
+                "config" to config.toMap()
             )
         )
     }
 
-    @PostMapping("/instruments/filters")
-    fun updateInstrumentFilters(@RequestBody request: InstrumentFiltersRequest): ResponseEntity<Map<String, Any>> {
-        tradingBotService.updateInstrumentFilters(
-            minDailyVolume = request.minDailyVolume,
-            minVolatility = request.minVolatility,
-            maxVolatility = request.maxVolatility,
-            maxCount = request.maxCount
+    @PostMapping("/risk/update")
+    fun updateRiskConfig(@RequestBody request: RiskConfigRequest): ResponseEntity<Map<String, Any?>> {
+        return try {
+            val updates = mutableListOf<String>()
+
+            request.riskPerTrade?.let {
+                config.riskPerTrade = it
+                updates.add("riskPerTrade = ${"%.1f".format(it * 100)}%")
+            }
+
+            request.maxCapitalUsage?.let {
+                config.maxCapitalUsage = it
+                updates.add("maxCapitalUsage = ${"%.0f".format(it * 100)}%")
+            }
+
+            request.maxPositionSize?.let {
+                config.maxPositionSize = it
+                updates.add("maxPositionSize = $it ₽")
+            }
+
+            request.minPositionSize?.let {
+                config.minPositionSize = it
+                updates.add("minPositionSize = $it ₽")
+            }
+
+            request.maxPositions?.let {
+                config.maxPositions = it
+                updates.add("maxPositions = $it")
+            }
+
+            // Принудительно сохраняем в БД после массового обновления
+            config.persist()
+
+            ResponseEntity.ok(
+                mapOf(
+                    "success" to true,
+                    "message" to "Параметры риска обновлены",
+                    "updates" to updates,
+                    "config" to config.toMap()
+                )
+            )
+        } catch (e: IllegalArgumentException) {
+            ResponseEntity.badRequest().body(
+                mapOf(
+                    "success" to false,
+                    "error" to e.message
+                )
+            )
+        }
+    }
+
+    @PostMapping("/risk/reset")
+    fun resetRiskConfig(): ResponseEntity<Map<String, Any>> {
+        config.riskPerTrade = 0.02
+        config.maxCapitalUsage = 0.80
+        config.maxPositionSize = 100_000L
+        config.minPositionSize = 5_000L
+        config.maxPositions = 10
+
+        config.persist()
+
+        return ResponseEntity.ok(
+            mapOf(
+                "success" to true,
+                "message" to "Параметры риска сброшены к значениям по умолчанию",
+                "config" to config.toMap()
+            )
         )
-        return ResponseEntity.ok(mapOf("status" to "updated", "filters" to request))
     }
 }
 
@@ -167,4 +257,12 @@ data class InstrumentFiltersRequest(
     val minVolatility: Double,
     val maxVolatility: Double,
     val maxCount: Int
+)
+
+data class RiskConfigRequest(
+    val riskPerTrade: Double? = null,
+    val maxCapitalUsage: Double? = null,
+    val maxPositionSize: Long? = null,
+    val minPositionSize: Long? = null,
+    val maxPositions: Int? = null
 )

@@ -8,9 +8,9 @@ import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.tinkoff.piapi.core.InstrumentsService
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 private val logger = KotlinLogging.logger {}
 
@@ -19,7 +19,6 @@ class MarketDataProvider(
     private val marketDataService: MarketDataService,
     private val instrumentsService: InstrumentsService
 ) {
-    // Кэш названий инструментов
     private val instrumentCache = mutableMapOf<String, InstrumentInfo>()
 
     data class InstrumentInfo(
@@ -27,22 +26,9 @@ class MarketDataProvider(
         val name: String
     )
 
-    suspend fun getUidByTicker(ticker: String): String? {
-        return try {
-            val instrument = instrumentsService.getShareByTickerSync(ticker, "TQBR")
-            instrument.uid.also { uid ->
-                instrumentCache[uid] = InstrumentInfo(instrument.ticker, instrument.name)
-            }
-        } catch (e: Exception) {
-            logger.error(e) { "Не удалось найти UID для $ticker" }
-            null
-        }
-    }
-
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
         logger.info { "Начинаем fetchMarketData для $instrumentUid" }
         return try {
-            // Получаем информацию об инструменте
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
 
@@ -53,9 +39,9 @@ class MarketDataProvider(
                 ?: throw IllegalStateException("Нет данных о последней цене для $displayName")
             val currentPrice = quotationToBigDecimal(lastPrice.price)
 
-            // 2. Свечи за последние 3 дня (для индикаторов)
+            // 2. Свечи за последние 3 дня
             val now = Instant.now()
-            val threeDaysAgo = now.minusSeconds(259200) // 3 дня
+            val threeDaysAgo = now.minusSeconds(259200)
             val candlesFuture = marketDataService.getCandles(
                 instrumentUid,
                 threeDaysAgo,
@@ -75,8 +61,9 @@ class MarketDataProvider(
             val rsi = calculateRSI(closes, 14)
             val macd = calculateMACD(closes)
             val bollingerBands = calculateBollingerBands(closes, currentPrice)
+            val atr = calculateATR(candles)  // 🆕
 
-            logger.info { "$displayName: цена=$currentPrice, EMA5=$ema5, EMA21=$ema21, RSI=$rsi" }
+            logger.info { "$displayName: цена=$currentPrice, EMA5=$ema5, EMA21=$ema21, RSI=$rsi, ATR=$atr" }
 
             MarketData(
                 instrumentId = instrumentUid,
@@ -87,6 +74,7 @@ class MarketDataProvider(
                 rsi = rsi,
                 macd = macd,
                 bollingerBands = bollingerBands,
+                atr = atr,  // 🆕
                 volume = currentVolume,
                 avgVolume = avgVolume,
                 spread = BigDecimal.valueOf(0.1),
@@ -98,9 +86,37 @@ class MarketDataProvider(
         }
     }
 
-    /**
-     * Получить информацию об инструменте по UID
-     */
+    // 🆕 Расчёт ATR (Average True Range)
+    private fun calculateATR(candles: List<HistoricCandle>, period: Int = 14): BigDecimal? {
+        if (candles.size < period + 1) return null
+
+        val trueRanges = mutableListOf<BigDecimal>()
+
+        for (i in 1 until candles.size) {
+            val high = quotationToBigDecimal(candles[i].high)
+            val low = quotationToBigDecimal(candles[i].low)
+            val prevClose = quotationToBigDecimal(candles[i - 1].close)
+
+            val tr1 = high - low
+            val tr2 = (high - prevClose).let { if (it < BigDecimal.ZERO) -it else it }
+            val tr3 = (low - prevClose).let { if (it < BigDecimal.ZERO) -it else it }
+
+            val trueRange = listOf(tr1, tr2, tr3).maxOrNull() ?: BigDecimal.ZERO
+            trueRanges.add(trueRange)
+        }
+
+        if (trueRanges.size < period) return null
+
+        var atr = trueRanges.take(period).reduce { acc, tr -> acc + tr } / BigDecimal(period)
+
+        val multiplier = 2.0 / (period + 1)
+        for (i in period until trueRanges.size) {
+            atr = trueRanges[i] * multiplier.toBigDecimal() + atr * (1 - multiplier).toBigDecimal()
+        }
+
+        return atr
+    }
+
     private suspend fun getInstrumentInfo(instrumentUid: String): InstrumentInfo? {
         instrumentCache[instrumentUid]?.let { return it }
 
@@ -164,15 +180,10 @@ class MarketDataProvider(
 
     private fun calculateMACD(prices: List<BigDecimal>): MacdData? {
         if (prices.size < 26) return null
-
         val ema12 = calculateEMA(prices, 12) ?: return null
         val ema26 = calculateEMA(prices, 26) ?: return null
         val macdLine = ema12 - ema26
-
-        // Для Signal Line нужна история MACD. Упрощённо используем последние 9 значений MACD
-        // В реальности нужно рассчитывать EMA от MACD Line, но для простоты используем заглушку
-        val signalLine = macdLine * BigDecimal("0.9") // Заглушка
-
+        val signalLine = macdLine * BigDecimal("0.9")
         return MacdData(
             macdLine = macdLine,
             signalLine = signalLine,
@@ -183,40 +194,28 @@ class MarketDataProvider(
 
     private fun calculateBollingerBands(prices: List<BigDecimal>, currentPrice: BigDecimal): BollingerBandsData? {
         if (prices.size < 20) return null
-
-        // SMA 20
         val period = 20
         val last20Prices = prices.takeLast(period)
         val sma20 = last20Prices.reduce { acc, price -> acc + price } / BigDecimal(period)
-
-        // Стандартное отклонение
         val variance = last20Prices.map { price ->
             val diff = price - sma20
             diff * diff
         }.reduce { acc, diff -> acc + diff }.toDouble() / period
-
         val stdDev = BigDecimal(Math.sqrt(variance))
-
-        // Полосы (±2 стандартных отклонения)
         val multiplier = BigDecimal.valueOf(2)
         val upperBand = sma20 + stdDev * multiplier
         val lowerBand = sma20 - stdDev * multiplier
-
-        // Ширина канала в процентах
         val bandwidth = if (sma20 > BigDecimal.ZERO) {
             (upperBand - lowerBand) / sma20 * BigDecimal(100)
         } else {
             BigDecimal.ZERO
         }
-
-        // %B — позиция цены внутри канала (0 = нижняя, 1 = верхняя)
         val bandRange = upperBand - lowerBand
         val percentB = if (bandRange > BigDecimal.ZERO) {
             ((currentPrice - lowerBand) / bandRange).toDouble().coerceIn(0.0, 1.0)
         } else {
             0.5
         }
-
         return BollingerBandsData(
             upperBand = upperBand,
             middleBand = sma20,
@@ -228,17 +227,14 @@ class MarketDataProvider(
 
     private fun calculateVolatility(prices: List<BigDecimal>): Double {
         if (prices.size < 2) return 2.5
-
         val returns = mutableListOf<Double>()
         for (i in 1 until prices.size) {
             val dailyReturn = (prices[i] - prices[i - 1]) / prices[i - 1]
             returns.add(dailyReturn.toDouble())
         }
-
         val mean = returns.average()
         val variance = returns.map { (it - mean) * (it - mean) }.average()
         val stdDev = Math.sqrt(variance)
-
         return stdDev * Math.sqrt(252.0) * 100
     }
 }

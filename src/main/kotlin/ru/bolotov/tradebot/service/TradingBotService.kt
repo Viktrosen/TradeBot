@@ -43,7 +43,9 @@ data class OpenPosition(
     val direction: DomainOrderDirection,
     val entryPrice: BigDecimal,
     val quantity: Long,
-    val entryTime: Instant
+    val entryTime: Instant,
+    val stopLossPrice: BigDecimal? = null,  // 🆕
+    val atr: BigDecimal? = null             // 🆕
 )
 
 @Service
@@ -56,16 +58,13 @@ class TradingBotService(
     private val portfolioSnapshotRepository: PortfolioSnapshotRepository,
     private val eventPublisherService: EventPublisherService,
     private val strategyConfigPersistenceService: StrategyConfigPersistenceService,
+    private val positionSizingService: PositionSizingService,
     private val operationsService: OperationsService,
     private val usersService: UsersService,
     private val sandboxService: SandboxService,
     private val instrumentSelector: InstrumentSelector,
     private val filterProperties: InstrumentFilterProperties,
     @Value("\${trading.loop.delay-ms:60000}") private val loopDelayMs: Long,
-    @Value("\${trading.quantity.default:10}") private val defaultQuantity: Long,
-    @Value("\${trading.quantity.sber:10}") private val sberQuantity: Long,
-    @Value("\${trading.quantity.t:10}") private val tQuantity: Long,
-    @Value("\${trading.quantity.ydex:10}") private val ydexQuantity: Long,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
     // Состояние бота
@@ -195,6 +194,8 @@ class TradingBotService(
 
         _isRunning.value = true
         logger.info { "🚀 Запуск торгового бота в реактивном режиме" }
+
+        // RabbitMQ (закомментировано)
         // eventPublisherService.publishBotStatusChanged("RUNNING")
 
         startPriceStream()
@@ -206,6 +207,8 @@ class TradingBotService(
         priceStreamJob?.cancel()
         schedulerJob?.cancel()
         logger.info { "Бот остановлен" }
+
+        // RabbitMQ (закомментировано)
         // eventPublisherService.publishBotStatusChanged("STOPPED")
     }
 
@@ -359,6 +362,8 @@ class TradingBotService(
 
             _openPositions.value = _openPositions.value - position.instrumentId
             saveCloseEvent(marketData, position, pnl, "SIGNAL_CLOSE")
+
+            // RabbitMQ (закомментировано)
             // eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
@@ -442,16 +447,29 @@ class TradingBotService(
         }
 
         when {
-            // Нет позиции — открываем новую
+            // Нет позиции — открываем новую с динамическим размером
             currentPosition == null -> {
-                val quantity = calculateDynamicQuantity(marketData.currentPrice)
-                val totalValue = marketData.currentPrice * BigDecimal.valueOf(quantity)
+                val availableCapital = getAvailableCapital()
 
-                if (!hasEnoughFunds(totalValue)) {
-                    logger.warn { "❌ Недостаточно средств для ${signal.direction} ${marketData.instrumentName}" }
+                // Проверяем, можно ли открыть новую позицию
+                if (!positionSizingService.canOpenNewPosition(availableCapital, _openPositions.value)) {
+                    logger.warn { "❌ Нельзя открыть новую позицию (лимит капитала или количества)" }
                     return
                 }
-                openNewPosition(marketData, signal, quantity, totalValue)
+
+                // Рассчитываем размер позиции
+                val positionSize = positionSizingService.calculatePositionSize(
+                    marketData = marketData,
+                    availableCapital = availableCapital,
+                    currentPositions = _openPositions.value
+                )
+
+                if (!hasEnoughFunds(positionSize.value)) {
+                    logger.warn { "❌ Недостаточно средств: нужно ${positionSize.value}, доступно $availableCapital" }
+                    return
+                }
+
+                openNewPosition(marketData, signal, positionSize)
             }
 
             // Сигнал ПРОТИВОПОЛОЖНЫЙ позиции — закрываем
@@ -467,18 +485,28 @@ class TradingBotService(
         }
     }
 
+    private suspend fun getAvailableCapital(): BigDecimal {
+        return try {
+            val portfolio = operationsService.getPortfolioSync(accountId!!)
+            portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+        } catch (e: Exception) {
+            logger.error(e) { "Ошибка получения баланса" }
+            BigDecimal.ZERO
+        }
+    }
+
+
     private suspend fun openNewPosition(
         marketData: MarketData,
         signal: ru.bolotov.tradebot.strategy.Signal,
-        quantity: Long,
-        totalValue: BigDecimal
+        positionSize: PositionSize
     ) {
         val direction = if (signal.direction == OrderDirection.BUY) {
             DomainOrderDirection.BUY
         } else {
             DomainOrderDirection.SELL
         }
-        // Генерируем новый ID для позиции
+
         val positionId = UUID.randomUUID().toString()
 
         val tradeEvent = TradeEvent(
@@ -489,8 +517,8 @@ class TradingBotService(
             pnl = null,
             eventType = EventType.OPEN,
             positionId = positionId,
-            quantity = quantity,
-            totalValue = totalValue,
+            quantity = positionSize.quantity,
+            totalValue = positionSize.value,
             reason = strategyManager.getCurrentStrategy().name,
             explanation = strategyManager.getExplanation(marketData),
             status = EventStatus.PENDING
@@ -501,7 +529,7 @@ class TradingBotService(
         val orderResult = orderExecutionService.placeOrder(
             accountId = accountId!!,
             instrumentId = marketData.instrumentId,
-            quantity = quantity,
+            quantity = positionSize.quantity,
             price = marketData.currentPrice,
             direction = if (signal.direction == OrderDirection.BUY) "BUY" else "SELL"
         )
@@ -517,14 +545,17 @@ class TradingBotService(
                 instrumentName = marketData.instrumentName,
                 direction = direction,
                 entryPrice = marketData.currentPrice,
-                quantity = quantity,
-                entryTime = Instant.now()
+                quantity = positionSize.quantity,
+                entryTime = Instant.now(),
+                stopLossPrice = positionSize.stopLossPrice,
+                atr = positionSize.atr
             )
 
-            _openPositions.value = _openPositions.value + (marketData.instrumentId to newPosition)
+            _openPositions.value += (marketData.instrumentId to newPosition)
 
-            logger.info { "📈 Открыта позиция: $direction ${marketData.instrumentName} по ${marketData.currentPrice}" }
+            logger.info { "📈 Открыта позиция: $direction ${marketData.instrumentName} (${positionSize.quantity} лотов, ${"%.0f".format(positionSize.value)} ₽, ${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)" }
 
+            // RabbitMQ (закомментировано)
             // eventPublisherService.publishTradeExecuted(savedEvent)
             // eventPublisherService.publishPortfolioChanged()
         } else {
@@ -551,11 +582,9 @@ class TradingBotService(
             processedAt = Instant.now()
         )
         tradeEventRepository.save(closeEvent)
-    }
 
-    private fun calculateDynamicQuantity(price: BigDecimal): Long {
-        val maxInvestment = 50_000L
-        return (maxInvestment / price.toLong()).coerceIn(1L, 100L)
+        // RabbitMQ (закомментировано)
+        // eventPublisherService.publishPortfolioChanged()
     }
 
     private suspend fun hasEnoughFunds(requiredAmount: BigDecimal): Boolean {
@@ -586,6 +615,8 @@ class TradingBotService(
                 )
                 portfolioSnapshotRepository.save(snapshot)
             }
+
+            // RabbitMQ (закомментировано)
             // eventPublisherService.publishPortfolioChanged()
         } catch (e: Exception) {
             logger.error(e) { "Ошибка сохранения снимка портфеля" }

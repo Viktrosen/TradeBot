@@ -33,6 +33,7 @@ data class MarketData(
     val rsi: Double?,
     val macd: MacdData?,
     val bollingerBands: BollingerBandsData?,
+    val atr: BigDecimal?,  // 🆕 Average True Range
     val volume: Long,
     val avgVolume: Long,
     val spread: BigDecimal,
