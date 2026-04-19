@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.InstrumentFilterProperties
 import ru.bolotov.tradebot.domain.model.EventStatus
+import ru.bolotov.tradebot.domain.model.EventType
 import ru.bolotov.tradebot.domain.model.PortfolioSnapshot
 import ru.bolotov.tradebot.domain.model.TradeEvent
 import ru.bolotov.tradebot.domain.repository.PortfolioSnapshotRepository
@@ -28,6 +29,7 @@ import ru.tinkoff.piapi.core.UsersService
 import ru.tinkoff.piapi.core.stream.StreamProcessor
 import java.math.BigDecimal
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Consumer
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
@@ -471,7 +473,13 @@ class TradingBotService(
         quantity: Long,
         totalValue: BigDecimal
     ) {
-        val direction = if (signal.direction == OrderDirection.BUY) DomainOrderDirection.BUY else DomainOrderDirection.SELL
+        val direction = if (signal.direction == OrderDirection.BUY) {
+            DomainOrderDirection.BUY
+        } else {
+            DomainOrderDirection.SELL
+        }
+        // Генерируем новый ID для позиции
+        val positionId = UUID.randomUUID().toString()
 
         val tradeEvent = TradeEvent(
             instrumentId = marketData.instrumentId,
@@ -479,6 +487,8 @@ class TradingBotService(
             direction = direction,
             price = marketData.currentPrice,
             pnl = null,
+            eventType = EventType.OPEN,
+            positionId = positionId,
             quantity = quantity,
             totalValue = totalValue,
             reason = strategyManager.getCurrentStrategy().name,
@@ -502,6 +512,7 @@ class TradingBotService(
             tradeEventRepository.save(savedEvent)
 
             val newPosition = OpenPosition(
+                positionId = positionId,
                 instrumentId = marketData.instrumentId,
                 instrumentName = marketData.instrumentName,
                 direction = direction,
@@ -533,6 +544,8 @@ class TradingBotService(
             totalValue = data.currentPrice * BigDecimal.valueOf(position.quantity),
             reason = reason,
             pnl = pnl,
+            eventType = EventType.CLOSE,
+            positionId = position.positionId,
             explanation = "Закрытие позиции, P&L: $pnl ₽",
             status = EventStatus.PROCESSED,
             processedAt = Instant.now()

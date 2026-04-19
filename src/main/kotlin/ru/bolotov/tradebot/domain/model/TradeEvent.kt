@@ -36,7 +36,18 @@ class TradeEvent(
 
     @Column(name = "pnl", precision = 20, scale = 2)
     var pnl: BigDecimal? = null,
+
+    @Column(name = "event_type")
+    @Enumerated(EnumType.STRING)
+    var eventType: EventType? = null,
+
+    @Column(name = "position_id")
+    var positionId: String? = null
 )
 
 enum class OrderDirection { BUY, SELL }
 enum class EventStatus { PENDING, PROCESSED, FAILED }
+enum class EventType {
+    OPEN,   // Открытие позиции
+    CLOSE   // Закрытие позиции
+}
