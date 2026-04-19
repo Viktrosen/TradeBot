@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 @Component
 class PositionSizingConfig(
-    private val persistenceService: RiskConfigPersistenceService? = null  // Опционально
+    private val persistenceService: RiskConfigPersistenceService  // Опционально
 ) {
 
     private val _riskPerTrade = AtomicReference(0.02)
