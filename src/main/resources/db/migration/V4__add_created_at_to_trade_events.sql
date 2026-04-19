@@ -2,7 +2,7 @@
 ALTER TABLE trade_events
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 
--- Заполняем created_at для существующих записей из processed_at (если есть)
+-- Заполняем created_at для существующих записей из processed_at
 UPDATE trade_events
 SET created_at = processed_at
 WHERE created_at IS NULL AND processed_at IS NOT NULL;
