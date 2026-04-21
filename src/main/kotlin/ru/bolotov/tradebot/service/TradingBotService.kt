@@ -64,7 +64,7 @@ class TradingBotService(
     private val sandboxService: SandboxService,
     private val instrumentSelector: InstrumentSelector,
     private val filterProperties: InstrumentFilterProperties,
-    @Value("\${trading.loop.delay-ms:60000}") private val loopDelayMs: Long,
+    @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
     // Состояние бота
