@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.service.TradingBotService
+import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.StrategyManager
 
 @RestController
@@ -15,7 +16,8 @@ import ru.bolotov.tradebot.strategy.StrategyManager
 class InternalCommandController(
     private val tradingBotService: TradingBotService,
     private val strategyManager: StrategyManager,
-    private val config: PositionSizingConfig
+    private val config: PositionSizingConfig,
+    private val candlestickPatternStrategy: CandlestickPatternStrategy
 ) {
 
     // ==================== БОТ ====================
@@ -81,6 +83,46 @@ class InternalCommandController(
         )
     }
 
+    @PostMapping("/strategy/candlestick")
+    fun switchToCandlestickStrategy(@RequestBody request: Map<String, Any> = emptyMap()): ResponseEntity<Map<String, Any>> {
+        // Получаем параметры из запроса (опционально)
+        val timeframeName = request["timeframe"] as? String
+        val minConfidence = (request["minConfidence"] as? Double) ?: candlestickPatternStrategy.minConfidence
+
+        // Настраиваем стратегию
+        if (timeframeName != null) {
+            try {
+                val timeframe = CandlestickPatternStrategy.CandleTimeframe.valueOf(timeframeName.uppercase())
+                candlestickPatternStrategy.setTimeframe(timeframe)
+            } catch (e: IllegalArgumentException) {
+                return ResponseEntity.badRequest().body(
+                    mapOf(
+                        "success" to false,
+                        "error" to "Неизвестный таймфрейм. Доступны: ${CandlestickPatternStrategy.CandleTimeframe.entries.joinToString { it.name }}"
+                    )
+                )
+            }
+        }
+
+        candlestickPatternStrategy.minConfidence = minConfidence
+
+        // Переключаем стратегию через StrategyManager
+        // Нужно добавить метод в StrategyManager для работы с CandlestickPatternStrategy
+        tradingBotService.switchToCandlestickStrategy(
+            timeframe = candlestickPatternStrategy.currentTimeframe,
+            minConfidence = minConfidence
+        )
+
+        return ResponseEntity.ok(
+            mapOf(
+                "success" to true,
+                "strategy" to "CandlestickPatterns",
+                "timeframe" to candlestickPatternStrategy.currentTimeframe.name,
+                "minConfidence" to minConfidence
+            )
+        )
+    }
+
     @PostMapping("/strategy/confirmation")
     fun switchToConfirmationStrategy(@RequestBody request: Map<String, List<String>>): ResponseEntity<Map<String, Any>> {
         val indicators = request["indicators"] ?: listOf("EMA", "RSI")
@@ -98,7 +140,13 @@ class InternalCommandController(
     fun getAvailableStrategies(): ResponseEntity<Map<String, Any>> {
         return ResponseEntity.ok(
             mapOf(
-                "strategies" to strategyManager.getAvailableStrategies(),
+                "strategies" to listOf(
+                    mapOf("name" to "ema", "type" to "simple", "description" to "Cross EMA (5/21)"),
+                    mapOf("name" to "rsi", "type" to "simple", "description" to "RSI oversold/overbought"),
+                    mapOf("name" to "macd", "type" to "simple", "description" to "MACD crossover"),
+                    mapOf("name" to "confirmation", "type" to "voting", "description" to "EMA+RSI+MACD+BB голосование"),
+                    mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)")
+                ),
                 "current" to mapOf(
                     "name" to tradingBotService.getCurrentStrategy().name,
                     "description" to tradingBotService.getCurrentStrategy().description

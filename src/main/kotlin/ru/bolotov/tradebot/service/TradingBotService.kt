@@ -14,6 +14,7 @@ import ru.bolotov.tradebot.domain.model.PortfolioSnapshot
 import ru.bolotov.tradebot.domain.model.TradeEvent
 import ru.bolotov.tradebot.domain.repository.PortfolioSnapshotRepository
 import ru.bolotov.tradebot.domain.repository.TradeEventRepository
+import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.OrderDirection
@@ -58,6 +59,7 @@ class TradingBotService(
     private val tradeEventRepository: TradeEventRepository,
     private val portfolioSnapshotRepository: PortfolioSnapshotRepository,
     private val eventPublisherService: EventPublisherService,
+    private val candlestickPatternStrategy: CandlestickPatternStrategy,
     private val strategyConfigPersistenceService: StrategyConfigPersistenceService,
     private val positionSizingService: PositionSizingService,
     private val operationsService: OperationsService,
@@ -116,7 +118,7 @@ class TradingBotService(
                     strategyManager.switchToConfirmationStrategy(config.indicators)
                     logger.info { "📂 Загружена сохранённая стратегия подтверждения: ${config.indicators}" }
                 }
-                null -> {
+                else -> {
                     logger.info { "📂 Нет сохранённой конфигурации, используется стратегия по умолчанию (Cross EMA)" }
                     strategyManager.switchToSimpleStrategy("ema")
                 }
@@ -295,7 +297,16 @@ class TradingBotService(
 
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
-            marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
+            val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
+
+            // Добавляем анализ свечных паттернов
+            val patternSignal = candlestickPatternStrategy.analyzeWithCandles(lastPrice.instrumentUid)
+            if (patternSignal.direction != OrderDirection.HOLD) {
+                logger.info { "🕯️ Свечной паттерн: ${patternSignal.reason}" }
+                // Можно использовать как дополнительный сигнал
+            }
+
+            marketData
         } catch (e: Exception) {
             logger.error(e) { "Ошибка обогащения данных для ${lastPrice.instrumentUid}" }
             null
@@ -600,6 +611,29 @@ class TradingBotService(
             logger.error(e) { "Ошибка проверки баланса" }
             false
         }
+    }
+
+    fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
+        // Настраиваем стратегию
+        candlestickPatternStrategy.setTimeframe(timeframe)
+        candlestickPatternStrategy.minConfidence = minConfidence
+
+        // Переключаем через StrategyManager
+        strategyManager.switchToCandlestickStrategy(candlestickPatternStrategy)
+
+        // Сохраняем конфигурацию
+        strategyConfigPersistenceService.saveCandlestickStrategy(
+            timeframe = timeframe.name,
+            minConfidence = minConfidence
+        )
+
+        // Перезапускаем стрим если бот запущен
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+        }
+
+        logger.info { "🕯️ Стратегия переключена на свечные паттерны: таймфрейм=${timeframe.name}, уверенность=${minConfidence}" }
     }
 
     private suspend fun takePortfolioSnapshot() {

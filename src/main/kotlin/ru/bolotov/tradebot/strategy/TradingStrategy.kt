@@ -37,7 +37,8 @@ data class MarketData(
     val volume: Long,
     val avgVolume: Long,
     val spread: BigDecimal,
-    val volatility: Double
+    val volatility: Double,
+    val candlestickPattern: CandlestickPatternStrategy.PatternResult? = null
 )
 
 data class MacdData(

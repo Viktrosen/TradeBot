@@ -62,6 +62,11 @@ class StrategyManager(
         )
     }
 
+    fun switchToCandlestickStrategy(strategy: CandlestickPatternStrategy) {
+        currentStrategy = strategy
+        logger.info { "🕯️ Переключено на свечную стратегию: ${strategy.name}" }
+    }
+
     fun switchToSimpleStrategy(strategyName: String) {
         currentStrategy = simpleStrategies[strategyName.lowercase()] ?: crossEmaStrategy
         logger.info { "🔄 Переключено на стратегию: ${currentStrategy.name}" }
