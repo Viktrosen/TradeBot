@@ -22,6 +22,7 @@ import ru.bolotov.tradebot.strategy.TradingStrategy
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
 import ru.tinkoff.piapi.contract.v1.MoneyValue
+import ru.tinkoff.piapi.core.InstrumentsService
 import ru.tinkoff.piapi.core.InvestApi
 import ru.tinkoff.piapi.core.OperationsService
 import ru.tinkoff.piapi.core.SandboxService
@@ -62,6 +63,7 @@ class TradingBotService(
     private val operationsService: OperationsService,
     private val usersService: UsersService,
     private val sandboxService: SandboxService,
+    private val instrumentsService: InstrumentsService,
     private val instrumentSelector: InstrumentSelector,
     private val filterProperties: InstrumentFilterProperties,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
@@ -88,12 +90,14 @@ class TradingBotService(
 
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
     private val signalDebounceMs = 5000L
+    private var isPortfolioRestored = false
 
     init {
         runBlocking {
             initializeAccount()
             selectInitialInstruments()
             loadLastStrategyConfiguration()
+            restorePositionsFromBroker()
         }
     }
 
@@ -679,6 +683,132 @@ class TradingBotService(
         }
 
         return results
+    }
+
+    private suspend fun restorePositionsFromBroker() {
+        if (accountId == null) {
+            logger.warn { "⚠️ Нет accountId, пропускаем восстановление позиций" }
+            return
+        }
+
+        if (isPortfolioRestored) {
+            logger.debug { "Портфель уже был восстановлен, пропускаем" }
+            return
+        }
+
+        try {
+            logger.info { "🔄 Синхронизация портфеля с брокером..." }
+
+            // Получаем портфель через OperationsService
+            val portfolio = operationsService.getPortfolioSync(accountId!!)
+
+            // portfolio.positions имеет тип List<ru.tinkoff.piapi.core.models.Position>
+            val brokerPositions = portfolio.positions
+
+            if (brokerPositions.isEmpty()) {
+                logger.info { "✅ Нет открытых позиций на брокерском счёте" }
+                _openPositions.value = emptyMap()
+                isPortfolioRestored = true
+                return
+            }
+
+            val restoredPositions = mutableMapOf<String, OpenPosition>()
+
+            for (pos in brokerPositions) {
+                try {
+                    val instrumentUid = pos.instrumentUid
+
+                    // Получаем информацию об инструменте
+                    val instrumentInfo = try {
+                        val share = instrumentsService.getShareByUidSync(instrumentUid)
+                        share.ticker to share.name
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Не удалось получить информацию для $instrumentUid" }
+                        instrumentUid to instrumentUid
+                    }
+
+                    // 🔧 Money → BigDecimal (у Money есть методы getValue() и getCurrency())
+                    val avgPrice = moneyToBigDecimal(pos.averagePositionPrice)
+
+                    // 🔧 quantity это BigDecimal
+                    val currentQuantity = pos.quantity
+                    val isLong = currentQuantity > BigDecimal.ZERO
+                    val direction = if (isLong) DomainOrderDirection.BUY else DomainOrderDirection.SELL
+                    val absQuantity = currentQuantity.abs().toLong()
+
+                    // Получаем текущий ATR (опционально)
+                    val marketData = try {
+                        marketDataProvider.fetchMarketData(instrumentUid)
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Не удалось получить ATR для $instrumentUid" }
+                        null
+                    }
+
+                    val atr = marketData?.atr
+                    val stopLossPrice = if (direction == DomainOrderDirection.BUY && atr != null) {
+                        avgPrice - atr * BigDecimal("1.5")
+                    } else if (direction == DomainOrderDirection.SELL && atr != null) {
+                        avgPrice + atr * BigDecimal("1.5")
+                    } else {
+                        null
+                    }
+
+                    // У Money нет timestamp, используем текущее время как fallback
+                    val entryTime = Instant.now().minusSeconds(3600)
+
+                    // Ищем существующий TradeEvent с OPEN по этой позиции
+                    val existingOpenEvent = tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
+                        instrumentUid,
+                        direction,
+                        EventType.OPEN
+                    )
+
+                    val positionId = existingOpenEvent?.positionId ?: UUID.randomUUID().toString()
+
+                    val restoredPosition = OpenPosition(
+                        positionId = positionId,
+                        instrumentId = instrumentUid,
+                        instrumentName = instrumentInfo.second,
+                        direction = direction,
+                        entryPrice = avgPrice,
+                        quantity = absQuantity,
+                        entryTime = entryTime,
+                        stopLossPrice = stopLossPrice,
+                        atr = atr
+                    )
+
+                    restoredPositions[instrumentUid] = restoredPosition
+                    logger.info { "📦 Восстановлена позиция: ${restoredPosition.direction} ${restoredPosition.instrumentName} " +
+                            "(${restoredPosition.quantity} лотов по ${restoredPosition.entryPrice} ₽)" }
+
+                } catch (e: Exception) {
+                    logger.error(e) { "❌ Ошибка восстановления позиции ${pos.instrumentUid}" }
+                }
+            }
+
+            _openPositions.value = restoredPositions
+
+            // Синхронизируем активные инструменты с позициями
+            val instrumentsWithPositions = restoredPositions.keys.toList()
+            if (instrumentsWithPositions.isNotEmpty()) {
+                val currentInstruments = _activeInstruments.value.toMutableSet()
+                currentInstruments.addAll(instrumentsWithPositions)
+                _activeInstruments.value = currentInstruments.toList()
+                logger.info { "🔄 Добавлены инструменты с позициями в activeInstruments: $instrumentsWithPositions" }
+            }
+
+            isPortfolioRestored = true
+            logger.info { "✅ Синхронизация завершена. Восстановлено ${restoredPositions.size} позиций" }
+
+        } catch (e: Exception) {
+            logger.error(e) { "❌ Критическая ошибка при синхронизации портфеля" }
+        }
+    }
+
+    // 🆕 Конвертация Money → BigDecimal (класс из T-Invest API)
+    private fun moneyToBigDecimal(money: ru.tinkoff.piapi.core.models.Money?): BigDecimal {
+        if (money == null) return BigDecimal.ZERO
+        return money.value  // Money имеет поле value типа BigDecimal
     }
 
     fun updateInstrumentFilters(
