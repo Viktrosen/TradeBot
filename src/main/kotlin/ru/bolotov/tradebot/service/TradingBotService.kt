@@ -210,7 +210,7 @@ class TradingBotService(
         logger.info { "🚀 Запуск торгового бота в реактивном режиме" }
 
         // RabbitMQ (закомментировано)
-        // eventPublisherService.publishBotStatusChanged("RUNNING")
+        eventPublisherService.publishBotStatusChanged("RUNNING")
 
         startPriceStream()
         startScheduler()
@@ -223,7 +223,7 @@ class TradingBotService(
         logger.info { "Бот остановлен" }
 
         // RabbitMQ (закомментировано)
-        // eventPublisherService.publishBotStatusChanged("STOPPED")
+        eventPublisherService.publishBotStatusChanged("STOPPED")
     }
 
     private fun startPriceStream() {
@@ -360,7 +360,7 @@ class TradingBotService(
 
             _openPositions.value = _openPositions.value - position.instrumentId
             saveCloseEvent(marketData, position, pnl, "CLOSE")
-            // eventPublisherService.publishPortfolioChanged()
+            eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
         }
@@ -387,7 +387,7 @@ class TradingBotService(
             saveCloseEvent(marketData, position, pnl, "SIGNAL_CLOSE")
 
             // RabbitMQ (закомментировано)
-            // eventPublisherService.publishPortfolioChanged()
+            eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
         }
@@ -579,8 +579,8 @@ class TradingBotService(
             logger.info { "📈 Открыта позиция: $direction ${marketData.instrumentName} (${positionSize.quantity} лотов, ${"%.0f".format(positionSize.value)} ₽, ${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)" }
 
             // RabbitMQ (закомментировано)
-            // eventPublisherService.publishTradeExecuted(savedEvent)
-            // eventPublisherService.publishPortfolioChanged()
+            eventPublisherService.publishTradeExecuted(savedEvent)
+            eventPublisherService.publishPortfolioChanged()
         } else {
             savedEvent.status = EventStatus.FAILED
             tradeEventRepository.save(savedEvent)
@@ -607,7 +607,7 @@ class TradingBotService(
         tradeEventRepository.save(closeEvent)
 
         // RabbitMQ (закомментировано)
-        // eventPublisherService.publishPortfolioChanged()
+        eventPublisherService.publishPortfolioChanged()
     }
 
     private suspend fun hasEnoughFunds(requiredAmount: BigDecimal): Boolean {
@@ -663,7 +663,7 @@ class TradingBotService(
             }
 
             // RabbitMQ (закомментировано)
-            // eventPublisherService.publishPortfolioChanged()
+            eventPublisherService.publishPortfolioChanged()
         } catch (e: Exception) {
             logger.error(e) { "Ошибка сохранения снимка портфеля" }
         }
