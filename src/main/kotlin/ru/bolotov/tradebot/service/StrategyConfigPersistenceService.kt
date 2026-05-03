@@ -5,266 +5,219 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
-import java.io.File
+import org.springframework.transaction.annotation.Transactional
+import ru.bolotov.tradebot.domain.model.StrategyConfig
+import ru.bolotov.tradebot.domain.model.StrategyType
+import ru.bolotov.tradebot.domain.repository.StrategyConfigRepository
 import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
 // Sealed class для типов загруженной конфигурации
 sealed class LoadedConfig {
-    data class Simple(val name: String) : LoadedConfig()
+    data class Simple(val name: String) : LoadedConfig()  // "ema", "rsi"
     data class Voting(val weights: Map<String, Int>) : LoadedConfig()
     data class Confirmation(val indicators: List<String>) : LoadedConfig()
     data class Candlestick(val timeframe: String, val minConfidence: Double) : LoadedConfig()
 }
 
-// Data classes для сериализации в JSON
-data class StrategyConfigWrapper(
-    var simpleConfig: StrategyConfigData? = null,
-    var votingConfig: StrategyConfigData? = null,
-    var confirmationConfig: StrategyConfigData? = null,
-    var candlestickConfig: StrategyConfigData? = null
-)
-
-data class StrategyConfigData(
-    val type: String,
-    val name: String? = null,
-    val weights: Map<String, Int>? = null,
-    val indicators: List<String>? = null,
-    val timeframe: String? = null,
-    val minConfidence: Double? = null,
-    val updatedAt: String
-)
-
 @Service
 class StrategyConfigPersistenceService(
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val configRepository: StrategyConfigRepository
 ) {
-
-    private val configFile = File("strategy_config.json")
 
     init {
         objectMapper.registerKotlinModule()
     }
 
     /**
-     * Приватная функция для сохранения конфигурации
-     * @param updateBlock функция, которая получает текущий wrapper и обновляет его
-     */
-    private fun saveConfig(updateBlock: StrategyConfigWrapper.() -> Unit) {
-        try {
-            val existingConfig = if (configFile.exists()) {
-                objectMapper.readValue<StrategyConfigWrapper>(configFile)
-            } else {
-                StrategyConfigWrapper()
-            }
-
-            // Применяем обновления
-            existingConfig.updateBlock()
-
-            // Сохраняем в файл
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, existingConfig)
-        } catch (e: Exception) {
-            logger.error(e) { "❌ Ошибка сохранения конфигурации" }
-            throw e
-        }
-    }
-
-    /**
      * Загрузка последней сохранённой конфигурации стратегии
      */
+    @Transactional(readOnly = true)
     fun loadLastConfiguration(): LoadedConfig? {
         return try {
-            if (!configFile.exists()) {
-                logger.info { "Файл конфигурации не найден, используем стратегию по умолчанию" }
-                return null
+            // Пробуем загрузить по порядку приоритета
+            val candlestickConfig = configRepository.findByType(StrategyType.CANDLESTICK)
+            if (candlestickConfig != null) {
+                return parseCandlestickConfig(candlestickConfig.config)
             }
 
-            val wrapper = objectMapper.readValue<StrategyConfigWrapper>(configFile)
-
-            // Сохраняем значения в локальные переменные
-            val candlestickConfig = wrapper.candlestickConfig
-            val confirmationConfig = wrapper.confirmationConfig
-            val votingConfig = wrapper.votingConfig
-            val simpleConfig = wrapper.simpleConfig
-
-            when {
-                candlestickConfig != null -> {
-                    logger.info { "📂 Загружена сохранённая свечная стратегия: ${candlestickConfig.timeframe}" }
-                    LoadedConfig.Candlestick(
-                        timeframe = candlestickConfig.timeframe ?: "M5",
-                        minConfidence = candlestickConfig.minConfidence ?: 0.6
-                    )
-                }
-                confirmationConfig != null -> {
-                    logger.info { "📂 Загружена сохранённая стратегия подтверждения: ${confirmationConfig.indicators}" }
-                    LoadedConfig.Confirmation(
-                        indicators = confirmationConfig.indicators ?: listOf("EMA", "RSI", "MACD", "BB")
-                    )
-                }
-                votingConfig != null -> {
-                    logger.info { "📂 Загружена сохранённая стратегия голосования: ${votingConfig.weights}" }
-                    LoadedConfig.Voting(
-                        weights = votingConfig.weights ?: emptyMap()
-                    )
-                }
-                simpleConfig != null -> {
-                    logger.info { "📂 Загружена сохранённая простая стратегия: ${simpleConfig.name}" }
-                    LoadedConfig.Simple(
-                        name = simpleConfig.name ?: "ema"
-                    )
-                }
-                else -> null
+            val confirmationConfig = configRepository.findByType(StrategyType.CONFIRMATION)
+            if (confirmationConfig != null) {
+                return parseConfirmationConfig(confirmationConfig.config)
             }
+
+            val votingConfig = configRepository.findByType(StrategyType.VOTING)
+            if (votingConfig != null) {
+                return parseVotingConfig(votingConfig.config)
+            }
+
+            val simpleEmaConfig = configRepository.findByType(StrategyType.SIMPLE_EMA)
+            if (simpleEmaConfig != null) {
+                return LoadedConfig.Simple("ema")
+            }
+
+            val simpleRsiConfig = configRepository.findByType(StrategyType.SIMPLE_RSI)
+            if (simpleRsiConfig != null) {
+                return LoadedConfig.Simple("rsi")
+            }
+
+            val compositeConfig = configRepository.findByType(StrategyType.COMPOSITE)
+            if (compositeConfig != null) {
+                return parseCompositeConfig(compositeConfig.config)
+            }
+
+            null
         } catch (e: Exception) {
             logger.error(e) { "❌ Ошибка загрузки конфигурации стратегии" }
             null
         }
     }
 
-    /**
-     * Сохранение простой стратегии (EMA, RSI, MACD)
-     */
-    fun saveSimpleStrategy(name: String) {
-        val config = StrategyConfigData(
-            type = "SIMPLE",
-            name = name,
-            updatedAt = Instant.now().toString()
+    private fun parseCandlestickConfig(configJson: String): LoadedConfig.Candlestick {
+        val map = objectMapper.readValue<Map<String, Any>>(configJson)
+        return LoadedConfig.Candlestick(
+            timeframe = map["timeframe"] as? String ?: "M5",
+            minConfidence = (map["minConfidence"] as? Number)?.toDouble() ?: 0.6
         )
+    }
 
-        saveConfig {
-            simpleConfig = config
-            votingConfig = null
-            confirmationConfig = null
-            candlestickConfig = null
+    private fun parseConfirmationConfig(configJson: String): LoadedConfig.Confirmation {
+        val map = objectMapper.readValue<Map<String, Any>>(configJson)
+        @Suppress("UNCHECKED_CAST")
+        val indicators = map["indicators"] as? List<String> ?: listOf("EMA", "RSI", "MACD", "BB")
+        return LoadedConfig.Confirmation(indicators)
+    }
+
+    private fun parseVotingConfig(configJson: String): LoadedConfig.Voting {
+        val map = objectMapper.readValue<Map<String, Any>>(configJson)
+        @Suppress("UNCHECKED_CAST")
+        val weights = map["weights"] as? Map<String, Int> ?: mapOf("EMA" to 1, "RSI" to 1, "MACD" to 1)
+        return LoadedConfig.Voting(weights)
+    }
+
+    private fun parseCompositeConfig(configJson: String): LoadedConfig.Simple {
+        // COMPOSITE сохраняем как Simple для обратной совместимости
+        return LoadedConfig.Simple("ema")
+    }
+
+    /**
+     * Сохранение простой стратегии (EMA)
+     */
+    @Transactional
+    fun saveSimpleStrategy(name: String) {
+        val strategyType = when (name.lowercase()) {
+            "ema" -> StrategyType.SIMPLE_EMA
+            "rsi" -> StrategyType.SIMPLE_RSI
+            else -> StrategyType.SIMPLE_EMA
         }
 
+        saveConfig(strategyType, emptyMap<String, Any>())
         logger.info { "💾 Сохранена простая стратегия: $name" }
     }
 
     /**
      * Сохранение стратегии голосования
      */
+    @Transactional
     fun saveVotingStrategy(weights: Map<String, Int>) {
-        val config = StrategyConfigData(
-            type = "VOTING",
-            weights = weights,
-            updatedAt = Instant.now().toString()
-        )
-
-        saveConfig {
-            votingConfig = config
-            simpleConfig = null
-            confirmationConfig = null
-            candlestickConfig = null
-        }
-
+        val config = mapOf("weights" to weights)
+        saveConfig(StrategyType.VOTING, config)
         logger.info { "💾 Сохранена стратегия голосования: $weights" }
     }
 
     /**
-     * Сохранение стратегии подтверждения (EMA + RSI + MACD + BB)
+     * Сохранение стратегии подтверждения
      */
+    @Transactional
     fun saveConfirmationStrategy(indicators: List<String>) {
-        val config = StrategyConfigData(
-            type = "CONFIRMATION",
-            indicators = indicators,
-            updatedAt = Instant.now().toString()
-        )
-
-        saveConfig {
-            confirmationConfig = config
-            simpleConfig = null
-            votingConfig = null
-            candlestickConfig = null
-        }
-
+        val config = mapOf("indicators" to indicators)
+        saveConfig(StrategyType.CONFIRMATION, config)
         logger.info { "💾 Сохранена стратегия подтверждения: $indicators" }
     }
 
     /**
-     * Сохранение свечной стратегии (Candlestick Patterns)
+     * Сохранение свечной стратегии
      */
+    @Transactional
     fun saveCandlestickStrategy(timeframe: String, minConfidence: Double) {
-        val config = StrategyConfigData(
-            type = "CANDLESTICK",
-            timeframe = timeframe,
-            minConfidence = minConfidence,
-            updatedAt = Instant.now().toString()
+        val config = mapOf(
+            "timeframe" to timeframe,
+            "minConfidence" to minConfidence
         )
-
-        saveConfig {
-            candlestickConfig = config
-            simpleConfig = null
-            votingConfig = null
-            confirmationConfig = null
-        }
-
+        saveConfig(StrategyType.CANDLESTICK, config)
         logger.info { "💾 Сохранена свечная стратегия: таймфрейм=$timeframe, уверенность=$minConfidence" }
+    }
+
+    /**
+     * Приватный метод сохранения конфигурации
+     */
+    private fun saveConfig(strategyType: StrategyType, configData: Map<String, Any>) {
+        val configJson = objectMapper.writeValueAsString(configData)
+        val existingConfig = configRepository.findById("current").orElse(null)
+
+        if (existingConfig != null) {
+            existingConfig.type = strategyType
+            existingConfig.config = configJson
+            existingConfig.updatedAt = Instant.now()
+            configRepository.save(existingConfig)
+        } else {
+            val newConfig = StrategyConfig(
+                id = "current",
+                type = strategyType,
+                config = configJson,
+                updatedAt = Instant.now()
+            )
+            configRepository.save(newConfig)
+        }
     }
 
     /**
      * Получение текущей конфигурации в виде Map (для API)
      */
+    @Transactional(readOnly = true)
     fun getCurrentConfig(): Map<String, Any?> {
         return try {
-            if (!configFile.exists()) {
-                return mapOf("exists" to false)
-            }
+            val config = configRepository.findById("current").orElse(null) ?: return mapOf("exists" to false)
 
-            val wrapper = objectMapper.readValue<StrategyConfigWrapper>(configFile)
+            val configData = objectMapper.readValue<Map<String, Any>>(config.config)
 
-            // Сохраняем значения в локальные переменные
-            val candlestickConfig = wrapper.candlestickConfig
-            val confirmationConfig = wrapper.confirmationConfig
-            val votingConfig = wrapper.votingConfig
-            val simpleConfig = wrapper.simpleConfig
-
-            when {
-                candlestickConfig != null -> mapOf(
+            when (config.type) {
+                StrategyType.CANDLESTICK -> mapOf(
                     "type" to "CANDLESTICK",
-                    "timeframe" to candlestickConfig.timeframe,
-                    "minConfidence" to candlestickConfig.minConfidence,
-                    "updatedAt" to candlestickConfig.updatedAt
+                    "timeframe" to configData["timeframe"],
+                    "minConfidence" to configData["minConfidence"],
+                    "updatedAt" to config.updatedAt.toString()
                 )
-                confirmationConfig != null -> mapOf(
+                StrategyType.CONFIRMATION -> mapOf(
                     "type" to "CONFIRMATION",
-                    "indicators" to confirmationConfig.indicators,
-                    "updatedAt" to confirmationConfig.updatedAt
+                    "indicators" to configData["indicators"],
+                    "updatedAt" to config.updatedAt.toString()
                 )
-                votingConfig != null -> mapOf(
+                StrategyType.VOTING -> mapOf(
                     "type" to "VOTING",
-                    "weights" to votingConfig.weights,
-                    "updatedAt" to votingConfig.updatedAt
+                    "weights" to configData["weights"],
+                    "updatedAt" to config.updatedAt.toString()
                 )
-                simpleConfig != null -> mapOf(
+                StrategyType.SIMPLE_EMA -> mapOf(
                     "type" to "SIMPLE",
-                    "name" to simpleConfig.name,
-                    "updatedAt" to simpleConfig.updatedAt
+                    "name" to "ema",
+                    "updatedAt" to config.updatedAt.toString()
                 )
-                else -> mapOf("type" to "NONE")
+                StrategyType.SIMPLE_RSI -> mapOf(
+                    "type" to "SIMPLE",
+                    "name" to "rsi",
+                    "updatedAt" to config.updatedAt.toString()
+                )
+                StrategyType.COMPOSITE -> mapOf(
+                    "type" to "COMPOSITE",
+                    "updatedAt" to config.updatedAt.toString()
+                )
             }
         } catch (e: Exception) {
             logger.error(e) { "Ошибка получения текущей конфигурации" }
             mapOf("error" to e.message)
-        }
-    }
-
-    /**
-     * Сброс конфигурации (удаление файла)
-     */
-    fun resetConfig(): Boolean {
-        return try {
-            if (configFile.exists()) {
-                configFile.delete()
-                logger.info { "🗑️ Конфигурация стратегии сброшена" }
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            logger.error(e) { "Ошибка сброса конфигурации" }
-            false
         }
     }
 }

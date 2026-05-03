@@ -118,7 +118,15 @@ class TradingBotService(
                     strategyManager.switchToConfirmationStrategy(config.indicators)
                     logger.info { "📂 Загружена сохранённая стратегия подтверждения: ${config.indicators}" }
                 }
-                else -> {
+                is LoadedConfig.Candlestick -> {
+                    strategyManager.switchToCandlestickStrategy(candlestickPatternStrategy)
+                    candlestickPatternStrategy.setTimeframe(
+                        CandlestickPatternStrategy.CandleTimeframe.valueOf(config.timeframe)
+                    )
+                    candlestickPatternStrategy.minConfidence = config.minConfidence
+                    logger.info { "📂 Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=${config.minConfidence}" }
+                }
+                null -> {
                     logger.info { "📂 Нет сохранённой конфигурации, используется стратегия по умолчанию (Cross EMA)" }
                     strategyManager.switchToSimpleStrategy("ema")
                 }

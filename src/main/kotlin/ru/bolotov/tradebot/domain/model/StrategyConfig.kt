@@ -21,5 +21,8 @@ class StrategyConfig(
 enum class StrategyType {
     SIMPLE_EMA,
     SIMPLE_RSI,
-    COMPOSITE
+    COMPOSITE,
+    VOTING,           // 🆕 стратегия голосования
+    CONFIRMATION,     // 🆕 стратегия подтверждения
+    CANDLESTICK       // 🆕 свечная стратегия
 }
