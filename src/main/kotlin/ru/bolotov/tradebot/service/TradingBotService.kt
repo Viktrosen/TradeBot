@@ -481,17 +481,20 @@ class TradingBotService(
         }
 
         when {
-            // Нет позиции — открываем новую с динамическим размером
+            // Нет позиции — открываем новую, но ТОЛЬКО BUY!
             currentPosition == null -> {
-                val availableCapital = getAvailableCapital()
+                // 🆕 Игнорируем сигналы SELL (шорт)
+                if (signalDirection == DomainOrderDirection.SELL) {
+                    logger.info { "⏸️ Игнорируем сигнал SELL для ${marketData.instrumentName} (короткие позиции отключены)" }
+                    return
+                }
 
-                // Проверяем, можно ли открыть новую позицию
+                val availableCapital = getAvailableCapital()
                 if (!positionSizingService.canOpenNewPosition(availableCapital, _openPositions.value)) {
                     logger.warn { "❌ Нельзя открыть новую позицию (лимит капитала или количества)" }
                     return
                 }
 
-                // Рассчитываем размер позиции
                 val positionSize = positionSizingService.calculatePositionSize(
                     marketData = marketData,
                     availableCapital = availableCapital,
