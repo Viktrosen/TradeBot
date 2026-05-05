@@ -725,12 +725,23 @@ class TradingBotService(
         for (attempt in 1..maxRetries) {
             try {
                 val marketData = marketDataProvider.fetchMarketData(position.instrumentId)
-                if (marketData == null) {
-                    logger.warn { "Нет данных для ${position.instrumentName}, пропускаем" }
+
+                // 🆕 Проверка на валидность цены
+                if (marketData == null || marketData.currentPrice <= BigDecimal.ZERO) {
+                    logger.warn {
+                        "⚠️ Нет валидной цены для ${position.instrumentName} (${position.instrumentId}), " +
+                                "цена: ${marketData?.currentPrice ?: "null"}. Пропускаем закрытие."
+                    }
                     return false
                 }
 
                 val closeDirection = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
+
+                // 🆕 Логируем перед отправкой
+                logger.info {
+                    "💰 Закрытие ${position.instrumentName}: $closeDirection ${position.quantity} лотов по цене ${marketData.currentPrice}"
+                }
+
                 val orderResult = orderExecutionService.placeOrder(
                     accountId = accountId!!,
                     instrumentId = position.instrumentId,
@@ -754,13 +765,14 @@ class TradingBotService(
                 }
             } catch (e: Exception) {
                 lastError = e
+                logger.warn { "Ошибка при закрытии ${position.instrumentName} (попытка $attempt): ${e.message}" }
                 if (attempt < maxRetries) {
                     delay(2000L * attempt)
                 }
             }
         }
 
-        logger.error { "❌ Не удалось закрыть позицию ${position.instrumentName}: ${lastError?.message}" }
+        logger.error { "❌ Не удалось закрыть позицию ${position.instrumentName} после $maxRetries попыток: ${lastError?.message}" }
         return false
     }
 
@@ -808,6 +820,10 @@ class TradingBotService(
 
                     // 🔧 Money → BigDecimal (у Money есть методы getValue() и getCurrency())
                     val avgPrice = moneyToBigDecimal(pos.averagePositionPrice)
+                    if (avgPrice <= BigDecimal.ZERO) {
+                        logger.warn { "⚠️ Пропускаем позицию с нулевой ценой: ${pos.instrumentUid}" }
+                        continue
+                    }
 
                     // 🔧 quantity это BigDecimal
                     val currentQuantity = pos.quantity
