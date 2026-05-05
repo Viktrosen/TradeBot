@@ -34,12 +34,6 @@ class ConfirmationStrategy : ConfigurableStrategy {
                 "RSI" -> analyzeRSI(data)
                 "MACD" -> analyzeMACD(data)
                 "BB", "BOLLINGER" -> analyzeBollingerBands(data)
-                "CANDLE", "CANDLESTICK" -> {
-                    // Для свечных паттернов требуется отдельная логика
-                    // Возвращаем HOLD, т.к. нужны исторические свечи
-                    // Реальная проверка будет в TradingBotService
-                    Signal.HOLD
-                }
                 else -> Signal.HOLD
             }
             signals[indicator] = signal

@@ -22,6 +22,7 @@ interface ConfigurableStrategy : TradingStrategy {
 sealed class StrategyConfiguration {
     data class Voting(val weights: Map<String, Int>) : StrategyConfiguration()
     data class Confirmation(val requiredIndicators: List<String>) : StrategyConfiguration()
+    data class Candlestick(val requiredPatterns: List<String>) : StrategyConfiguration()
 }
 
 data class MarketData(

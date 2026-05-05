@@ -310,14 +310,19 @@ class TradingBotService(
 
             // Добавляем анализ свечных паттернов
             val patternSignal = candlestickPatternStrategy.analyzeWithCandles(lastPrice.instrumentUid)
-            if (patternSignal.direction != OrderDirection.HOLD) {
-                logger.info { "🕯️ Свечной паттерн: ${patternSignal.reason}" }
-                // Можно использовать как дополнительный сигнал
-            }
+            val patternResult = if (patternSignal.direction != OrderDirection.HOLD) {
+                // конвертируем Signal в PatternResult
+                CandlestickPatternStrategy.PatternResult(
+                    pattern = null,  // нужно доработать
+                    direction = patternSignal.direction,
+                    confidence = patternSignal.confidence,
+                    description = patternSignal.reason ?: ""
+                )
+            } else null
 
-            marketData
+            marketData?.copy(candlestickPattern = patternResult)
         } catch (e: Exception) {
-            logger.error(e) { "Ошибка обогащения данных для ${lastPrice.instrumentUid}" }
+            logger.error(e) { "Ошибка обогащения данных" }
             null
         }
     }
@@ -622,29 +627,6 @@ class TradingBotService(
         }
     }
 
-    fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
-        // Настраиваем стратегию
-        candlestickPatternStrategy.setTimeframe(timeframe)
-        candlestickPatternStrategy.minConfidence = minConfidence
-
-        // Переключаем через StrategyManager
-        strategyManager.switchToCandlestickStrategy(candlestickPatternStrategy)
-
-        // Сохраняем конфигурацию
-        strategyConfigPersistenceService.saveCandlestickStrategy(
-            timeframe = timeframe.name,
-            minConfidence = minConfidence
-        )
-
-        // Перезапускаем стрим если бот запущен
-        if (_isRunning.value) {
-            priceStreamJob?.cancel()
-            startPriceStream()
-        }
-
-        logger.info { "🕯️ Стратегия переключена на свечные паттерны: таймфрейм=${timeframe.name}, уверенность=${minConfidence}" }
-    }
-
     private suspend fun takePortfolioSnapshot() {
         try {
             if (accountId != null) {
@@ -713,6 +695,28 @@ class TradingBotService(
         } finally {
             isClosingPositions = false
         }
+    }
+
+    fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
+        // Обновляем настройки свечного анализа
+        candlestickPatternStrategy.setTimeframe(timeframe)
+        candlestickPatternStrategy.minConfidence = minConfidence
+
+        // Переключаем стратегию (используем отдельную стратегию, а не ConfirmationStrategy)
+        strategyManager.switchToCandlestickStrategy(listOf("ENGULFING", "HAMMER", "DOJI"))
+
+        // Сохраняем в БД
+        strategyConfigPersistenceService.saveCandlestickStrategy(
+            timeframe = timeframe.name,
+            minConfidence = minConfidence
+        )
+
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+        }
+
+        logger.info { "🕯️ Стратегия переключена на свечные паттерны: таймфрейм=${timeframe.name}, уверенность=${minConfidence}" }
     }
 
     private suspend fun closePositionWithRetry(position: OpenPosition, maxRetries: Int = 3): Boolean {

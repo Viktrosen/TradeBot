@@ -12,7 +12,8 @@ class StrategyManager(
     private val macdStrategy: MacdStrategy,
     private val bbStrategy: BollingerBandsStrategy,
     private val votingStrategy: VotingStrategy,
-    private val confirmationStrategy: ConfirmationStrategy
+    private val confirmationStrategy: ConfirmationStrategy,
+    private val candlestickStrategy: CandlestickStrategy
 ) {
     private var currentStrategy: TradingStrategy = crossEmaStrategy
 
@@ -63,6 +64,13 @@ class StrategyManager(
     }
 
     fun switchToCandlestickStrategy(strategy: CandlestickPatternStrategy) {
+        currentStrategy = strategy
+        logger.info { "🕯️ Переключено на свечную стратегию: ${strategy.name}" }
+    }
+
+    fun switchToCandlestickStrategy(requiredPatterns: List<String>) {
+        val strategy = candlestickStrategy  // нужно добавить dependency
+        strategy.configure(StrategyConfiguration.Candlestick(requiredPatterns))
         currentStrategy = strategy
         logger.info { "🕯️ Переключено на свечную стратегию: ${strategy.name}" }
     }
