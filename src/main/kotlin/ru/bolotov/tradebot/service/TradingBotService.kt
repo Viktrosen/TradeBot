@@ -142,22 +142,22 @@ class TradingBotService(
         try {
             if (sandboxEnabled) {
                 val existingAccounts = sandboxService.getAccountsSync()
-                if (existingAccounts.isNotEmpty()) {
-                    accountId = existingAccounts.firstOrNull()?.id
-                    logger.info { "Используем существующий Sandbox-счёт: $accountId" }
-                } else {
+                //if (existingAccounts.isNotEmpty()) {
+                //    accountId = existingAccounts.firstOrNull()?.id
+                //    logger.info { "Используем существующий Sandbox-счёт: $accountId" }
+                //} else {
                     val newAccount = sandboxService.openAccountSync()
                     accountId = newAccount
                     logger.info { "Создан новый Sandbox-счёт: $accountId" }
-                }
+                //}
 
                 if (accountId != null) {
                     try {
                         val portfolio = operationsService.getPortfolioSync(accountId!!)
                         val currentBalance = portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
 
-                        if (currentBalance < BigDecimal.valueOf(10_000_000_000)) {
-                            val neededAmount = BigDecimal.valueOf(10_000_000_000)
+                        if (currentBalance < BigDecimal.valueOf(50_000)) {
+                            val neededAmount = BigDecimal.valueOf(50_000)
                             sandboxService.payInSync(
                                 accountId!!,
                                 MoneyValue.newBuilder()
