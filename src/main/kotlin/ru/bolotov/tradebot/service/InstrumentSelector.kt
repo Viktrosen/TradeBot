@@ -6,10 +6,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Component
-import ru.tinkoff.piapi.core.InstrumentsService
-import ru.tinkoff.piapi.core.MarketDataService
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.Quotation
+import ru.tinkoff.piapi.contract.v1.ShareType
+import ru.tinkoff.piapi.core.InstrumentsService
+import ru.tinkoff.piapi.core.MarketDataService
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -23,23 +24,66 @@ class InstrumentSelector(
     private val marketDataService: MarketDataService
 ) {
 
+    enum class InstrumentCategory(val types: List<String>, val description: String) {
+        // Акции (обыкновенные и привилегированные)
+        STOCK(listOf("stock", "common_share", "preferred_share"), "Акции"),
+
+        // Облигации
+        BOND(listOf("bond"), "Облигации"),
+
+        // ETF (фонды)
+        ETF(listOf("etf", "etp"), "ETF"),
+
+        // Фьючерсы
+        FUTURES(listOf("future"), "Фьючерсы"),
+
+        // Валюта
+        CURRENCY(listOf("currency"), "Валюта"),
+
+        // Все инструменты
+        ALL(emptyList(), "Все инструменты");
+
+        companion object {
+            fun fromString(value: String): InstrumentCategory? {
+                return values().find { it.name.equals(value, ignoreCase = true) }
+            }
+        }
+    }
+
     suspend fun selectTradableInstruments(
         minDailyVolume: Long = 10_000_000,
         minVolatility: Double = 3.0,
         maxVolatility: Double = 15.0,
-        maxCount: Int = 10
+        maxCount: Int = 10,
+        allowedCategories: List<InstrumentCategory> = listOf(InstrumentCategory.STOCK, InstrumentCategory.BOND)  // 🆕 по умолчанию акции и облигации
     ): List<SelectedInstrument> {
         logger.info { "========== НАЧАЛО ОТБОРА ИНСТРУМЕНТОВ ==========" }
         logger.info { "Параметры фильтрации: мин.объём=$minDailyVolume, волатильность=$minVolatility%..$maxVolatility%, макс.кол-во=$maxCount" }
+        logger.info { "📋 Допустимые типы: ${allowedCategories.joinToString { it.description }}" }
 
         val allShares = instrumentsService.tradableSharesSync
         logger.info { "Получено ${allShares.size} доступных акций" }
 
+        // 🆕 Фильтрация по типу инструмента
+        val filteredByType = allShares.filter { share ->
+            val instrumentType = getInstrumentType(share.uid)
+            val isAllowed = allowedCategories.any { category ->
+                category.types.isEmpty() || instrumentType in category.types
+            }
+
+            if (!isAllowed) {
+                logger.debug { "❌ ${share.ticker}: тип '$instrumentType' не входит в разрешённые категории" }
+            }
+            isAllowed
+        }
+
+        logger.info { "✅ Прошли фильтр по типу: ${filteredByType.size} из ${allShares.size} инструментов" }
+
         // ========== ОПТИМИЗАЦИЯ 1: Пакетная проверка статусов торговли ==========
-        val shareUids = allShares.map { it.uid }
+        val shareUids = filteredByType.map { it.uid }
         val tradingStatuses = getTradingStatusesBatch(shareUids)
 
-        val tradableShares = allShares.filter { share ->
+        val tradableShares = filteredByType.filter { share ->
             val isTradable = tradingStatuses[share.uid] ?: false
             if (isTradable) {
                 logger.debug { "✅ ${share.ticker}: доступен для торговли через API" }
@@ -49,7 +93,7 @@ class InstrumentSelector(
             isTradable
         }
 
-        logger.info { "✅ Прошли проверку торговли: ${tradableShares.size} из ${allShares.size}" }
+        logger.info { "✅ Прошли проверку торговли: ${tradableShares.size} из ${filteredByType.size}" }
 
         // ========== ОПТИМИЗАЦИЯ 2: Пакетное получение цен ==========
         val prices = getCurrentPricesBatch(tradableShares.map { it.uid })
@@ -87,6 +131,7 @@ class InstrumentSelector(
                                 uid = share.uid,
                                 ticker = share.ticker,
                                 name = share.name,
+                                instrumentType = getInstrumentType(share.uid),  // 🆕 добавляем тип
                                 dailyVolume = dailyVolume,
                                 volatility = volatility,
                                 price = price
@@ -115,7 +160,7 @@ class InstrumentSelector(
             logger.warn { "⚠️ НЕ ОТОБРАНО НИ ОДНОГО ИНСТРУМЕНТА! Проверьте настройки фильтрации." }
         } else {
             selected.forEachIndexed { index, instrument ->
-                logger.info { "  ${index + 1}. ${instrument.ticker} (${instrument.name}): цена=${instrument.price}, объём=${instrument.dailyVolume}, волатильность=${String.format("%.2f", instrument.volatility)}%" }
+                logger.info { "  ${index + 1}. ${instrument.ticker} (${instrument.instrumentType}): ${instrument.name} | цена=${instrument.price}, объём=${instrument.dailyVolume}, волатильность=${String.format("%.2f", instrument.volatility)}%" }
             }
         }
 
@@ -125,10 +170,39 @@ class InstrumentSelector(
     }
 
     /**
+     * 🆕 Получение типа инструмента по UID
+     */
+    private fun getInstrumentType(instrumentUid: String): String {
+        return try {
+            // Пробуем получить как акцию
+            val share = instrumentsService.getShareByUidSync(instrumentUid)
+            if (share.shareType == ShareType.SHARE_TYPE_COMMON) return "stock"
+            if (share.shareType == ShareType .SHARE_TYPE_PREFERRED) return "preferred_share"
+            return "stock"
+        } catch (e: Exception) {
+            try {
+                // Пробуем как облигацию
+                val bond = instrumentsService.getBondByUidSync(instrumentUid)
+                return "bond"
+            } catch (e2: Exception) {
+                try {
+                    // Пробуем как ETF
+                    val etf = instrumentsService.getEtfByUidSync(instrumentUid)
+                    return "etf"
+                } catch (e3: Exception) {
+                    "unknown"
+                }
+            }
+        }
+    }
+
+    /**
      * Пакетное получение статусов торговли для списка инструментов
      * ОДИН запрос вместо N запросов!
      */
     private fun getTradingStatusesBatch(instrumentUids: List<String>): Map<String, Boolean> {
+        if (instrumentUids.isEmpty()) return emptyMap()
+
         return try {
             val response = marketDataService.getTradingStatusesSync(instrumentUids)
 
@@ -231,6 +305,7 @@ data class SelectedInstrument(
     val uid: String,
     val ticker: String,
     val name: String,
+    val instrumentType: String,  // 🆕 добавлено поле
     val dailyVolume: Long,
     val volatility: Double,
     val price: BigDecimal

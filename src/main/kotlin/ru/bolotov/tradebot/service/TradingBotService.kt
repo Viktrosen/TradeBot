@@ -187,13 +187,18 @@ class TradingBotService(
             minDailyVolume = filterProperties.minDailyVolume,
             minVolatility = filterProperties.minVolatility,
             maxVolatility = filterProperties.maxVolatility,
-            maxCount = filterProperties.maxCount
+            maxCount = filterProperties.maxCount,
+            allowedCategories = listOf(
+                InstrumentSelector.InstrumentCategory.STOCK,
+                InstrumentSelector.InstrumentCategory.BOND,
+                InstrumentSelector.InstrumentCategory.ETF
+            )  // 🆕 только акции, облигации и ETF
         )
 
         _activeInstruments.value = selectedInstruments.map { it.uid }
         logger.info { "Отобрано ${_activeInstruments.value.size} инструментов для торговли" }
         selectedInstruments.forEach { instrument ->
-            logger.info { "  - ${instrument.ticker}: цена=${instrument.price}" }
+            logger.info { "  - ${instrument.ticker} (${instrument.instrumentType}): цена=${instrument.price}" }
         }
     }
 

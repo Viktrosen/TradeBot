@@ -295,7 +295,8 @@ data class InstrumentFiltersRequest(
     val minDailyVolume: Long,
     val minVolatility: Double,
     val maxVolatility: Double,
-    val maxCount: Int
+    val maxCount: Int,
+    val allowedCategories: List<String> = listOf("STOCK", "BOND")  // 🆕
 )
 
 data class RiskConfigRequest(
