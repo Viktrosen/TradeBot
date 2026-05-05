@@ -195,26 +195,17 @@ class InternalCommandController(
 
     @PostMapping("/close-all")
     fun closeAllPositions(): ResponseEntity<Map<String, Any>> {
-        return try {
-            var result: List<Map<String, Any>> = emptyList()
-            runBlocking {
-                result = tradingBotService.closeAllPositions()
-            }
-            ResponseEntity.ok(
-                mapOf(
-                    "status" to "closed",
-                    "closedPositions" to result,
-                    "message" to "Все позиции закрыты"
-                )
-            )
-        } catch (e: Exception) {
-            ResponseEntity.status(500).body(
-                mapOf(
-                    "status" to "error",
-                    "error" to (e.message ?: "Unknown error")
-                )
-            )
+        // Запускаем закрытие в фоне, не блокируя ответ
+        CoroutineScope(Dispatchers.IO).launch {
+            tradingBotService.closeAllPositionsAsync()
         }
+
+        return ResponseEntity.ok(
+            mapOf(
+                "status" to "closing",
+                "message" to "Запущен процесс закрытия всех позиций. Статус можно проверить через GET /positions"
+            )
+        )
     }
 
     // ==================== УПРАВЛЕНИЕ РИСКАМИ ====================

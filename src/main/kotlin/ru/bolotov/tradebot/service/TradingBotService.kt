@@ -93,6 +93,7 @@ class TradingBotService(
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
     private val signalDebounceMs = 5000L
     private var isPortfolioRestored = false
+    private var isClosingPositions = false
 
     init {
         runBlocking {
@@ -683,22 +684,52 @@ class TradingBotService(
         }
     }
 
-    suspend fun closeAllPositions(): List<Map<String, String>> {
-        val results = mutableListOf<Map<String, String>>()
-        val positions = _openPositions.value.toMap()
+    suspend fun closeAllPositionsAsync() {
+        if (isClosingPositions) {
+            logger.warn { "Закрытие позиций уже запущено" }
+            return
+        }
 
-        for ((instrumentId, position) in positions) {
+        isClosingPositions = true
+
+        try {
+            val positions = _openPositions.value.values.toList()  // ← .values.toList()
+            logger.info { "🚀 Начинаем закрытие ${positions.size} позиций" }
+
+            // Разбиваем на пачки и обрабатываем
+            positions.chunked(3).forEach { chunk ->
+                coroutineScope {
+                    val deferreds = chunk.map { position ->  // ← теперь position: OpenPosition
+                        async(Dispatchers.IO) {
+                            closePositionWithRetry(position)
+                        }
+                    }
+                    deferreds.awaitAll()
+                }
+                delay(2000)
+            }
+
+            logger.info { "✅ Закрытие всех позиций завершено" }
+        } finally {
+            isClosingPositions = false
+        }
+    }
+
+    private suspend fun closePositionWithRetry(position: OpenPosition, maxRetries: Int = 3): Boolean {
+        var lastError: Exception? = null
+
+        for (attempt in 1..maxRetries) {
             try {
-                val marketData = marketDataProvider.fetchMarketData(instrumentId)
+                val marketData = marketDataProvider.fetchMarketData(position.instrumentId)
                 if (marketData == null) {
-                    results.add(mapOf("instrumentId" to instrumentId, "status" to "failed"))
-                    continue
+                    logger.warn { "Нет данных для ${position.instrumentName}, пропускаем" }
+                    return false
                 }
 
                 val closeDirection = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
                 val orderResult = orderExecutionService.placeOrder(
                     accountId = accountId!!,
-                    instrumentId = instrumentId,
+                    instrumentId = position.instrumentId,
                     quantity = position.quantity,
                     price = marketData.currentPrice,
                     direction = closeDirection
@@ -706,25 +737,27 @@ class TradingBotService(
 
                 if (orderResult.success) {
                     val pnl = calculatePnl(position, marketData.currentPrice)
+                    logger.info { "✅ Закрыта позиция: ${position.instrumentName}, P&L: $pnl ₽" }
 
-                    results.add(mapOf(
-                        "instrumentId" to instrumentId,
-                        "instrumentName" to position.instrumentName,
-                        "status" to "closed",
-                        "pnl" to pnl.toPlainString()
-                    ))
-
-                    _openPositions.value = _openPositions.value - instrumentId
+                    _openPositions.value = _openPositions.value - position.instrumentId
                     saveCloseEvent(marketData, position, pnl, "EMERGENCY_CLOSE")
+                    return true
                 } else {
-                    results.add(mapOf("instrumentId" to instrumentId, "status" to "failed"))
+                    lastError = Exception(orderResult.error)
+                    if (attempt < maxRetries) {
+                        delay(2000L * attempt)
+                    }
                 }
             } catch (e: Exception) {
-                results.add(mapOf("instrumentId" to instrumentId, "status" to "failed"))
+                lastError = e
+                if (attempt < maxRetries) {
+                    delay(2000L * attempt)
+                }
             }
         }
 
-        return results
+        logger.error { "❌ Не удалось закрыть позицию ${position.instrumentName}: ${lastError?.message}" }
+        return false
     }
 
     private suspend fun restorePositionsFromBroker() {
