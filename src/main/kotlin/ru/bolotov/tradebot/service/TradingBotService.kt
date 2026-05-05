@@ -156,8 +156,8 @@ class TradingBotService(
                         val portfolio = operationsService.getPortfolioSync(accountId!!)
                         val currentBalance = portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
 
-                        if (currentBalance < BigDecimal.valueOf(1_000_000)) {
-                            val neededAmount = BigDecimal.valueOf(1_000_000) - currentBalance
+                        if (currentBalance < BigDecimal.valueOf(5_000_000)) {
+                            val neededAmount = BigDecimal.valueOf(5_000_000) - currentBalance
                             sandboxService.payInSync(
                                 accountId!!,
                                 MoneyValue.newBuilder()
