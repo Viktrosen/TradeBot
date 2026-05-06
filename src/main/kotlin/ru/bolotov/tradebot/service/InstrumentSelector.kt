@@ -54,140 +54,70 @@ class InstrumentSelector(
         minDailyVolume: Long = 10_000_000,
         minVolatility: Double = 3.0,
         maxVolatility: Double = 15.0,
-        maxCount: Int = 10,
-        allowedCategories: List<InstrumentCategory> = listOf(InstrumentCategory.STOCK, InstrumentCategory.BOND)  // 🆕 по умолчанию акции и облигации
+        maxCount: Int = 10
     ): List<SelectedInstrument> {
         logger.info { "========== НАЧАЛО ОТБОРА ИНСТРУМЕНТОВ ==========" }
         logger.info { "Параметры фильтрации: мин.объём=$minDailyVolume, волатильность=$minVolatility%..$maxVolatility%, макс.кол-во=$maxCount" }
-        logger.info { "📋 Допустимые типы: ${allowedCategories.joinToString { it.description }}" }
 
-        val allShares = instrumentsService.tradableSharesSync
+        val allShares = instrumentsService.getTradableSharesSync()
         logger.info { "Получено ${allShares.size} доступных акций" }
 
-        // 🆕 Фильтрация по типу инструмента
-        val filteredByType = allShares.filter { share ->
-            val instrumentType = getInstrumentType(share.uid)
-            val isAllowed = allowedCategories.any { category ->
-                category.types.isEmpty() || instrumentType in category.types
-            }
-
-            if (!isAllowed) {
-                logger.debug { "❌ ${share.ticker}: тип '$instrumentType' не входит в разрешённые категории" }
-            }
-            isAllowed
-        }
-
-        logger.info { "✅ Прошли фильтр по типу: ${filteredByType.size} из ${allShares.size} инструментов" }
-
-        // ========== ОПТИМИЗАЦИЯ 1: Пакетная проверка статусов торговли ==========
-        val shareUids = filteredByType.map { it.uid }
+        // Пакетная проверка статусов торговли
+        val shareUids = allShares.map { it.uid }
         val tradingStatuses = getTradingStatusesBatch(shareUids)
 
-        val tradableShares = filteredByType.filter { share ->
-            val isTradable = tradingStatuses[share.uid] ?: false
-            if (isTradable) {
-                logger.debug { "✅ ${share.ticker}: доступен для торговли через API" }
-            } else {
-                logger.debug { "❌ ${share.ticker}: НЕ доступен для торговли через API" }
-            }
-            isTradable
+        val tradableShares = allShares.filter { share ->
+            tradingStatuses[share.uid] ?: false
         }
 
-        logger.info { "✅ Прошли проверку торговли: ${tradableShares.size} из ${filteredByType.size}" }
+        logger.info { "✅ Прошли проверку торговли: ${tradableShares.size} из ${allShares.size}" }
 
-        // ========== ОПТИМИЗАЦИЯ 2: Пакетное получение цен ==========
+        // Получаем цены пакетно
         val prices = getCurrentPricesBatch(tradableShares.map { it.uid })
 
         var failedVolume = 0
         var failedVolatility = 0
-        var otherErrors = 0
 
-        // ========== ОПТИМИЗАЦИЯ 3: Параллельный анализ инструментов ==========
-        val selected = coroutineScope {
-            tradableShares
-                .map { share ->
-                    async {
-                        try {
-                            val dailyVolume = getDailyVolume(share.uid)
-                            if (dailyVolume < minDailyVolume) {
-                                failedVolume++
-                                logger.debug { "📉 ${share.ticker}: объём $dailyVolume < $minDailyVolume - пропуск" }
-                                return@async null
-                            }
-                            logger.debug { "📊 ${share.ticker}: объём = $dailyVolume (OK)" }
-
-                            val volatility = calculateVolatility(share.uid, 30)
-                            if (volatility < minVolatility || volatility > maxVolatility) {
-                                failedVolatility++
-                                logger.debug { "📈 ${share.ticker}: волатильность ${String.format("%.2f", volatility)}% вне диапазона - пропуск" }
-                                return@async null
-                            }
-                            logger.debug { "🎯 ${share.ticker}: волатильность = ${String.format("%.2f", volatility)}% (OK)" }
-
-                            val price = prices[share.uid] ?: BigDecimal.ZERO
-                            logger.debug { "💰 ${share.ticker}: текущая цена = $price" }
-
-                            SelectedInstrument(
-                                uid = share.uid,
-                                ticker = share.ticker,
-                                name = share.name,
-                                instrumentType = getInstrumentType(share.uid),  // 🆕 добавляем тип
-                                dailyVolume = dailyVolume,
-                                volatility = volatility,
-                                price = price
-                            )
-                        } catch (e: Exception) {
-                            otherErrors++
-                            logger.error(e) { "❌ Ошибка анализа ${share.ticker}: ${e.message}" }
-                            null
-                        }
+        val selected = tradableShares
+            .mapNotNull { share ->
+                try {
+                    val dailyVolume = getDailyVolume(share.uid)
+                    if (dailyVolume < minDailyVolume) {
+                        failedVolume++
+                        return@mapNotNull null
                     }
+
+                    val volatility = calculateVolatility(share.uid, 30)
+                    if (volatility < minVolatility || volatility > maxVolatility) {
+                        failedVolatility++
+                        return@mapNotNull null
+                    }
+
+                    val price = prices[share.uid] ?: BigDecimal.ZERO
+
+                    SelectedInstrument(
+                        uid = share.uid,
+                        ticker = share.ticker,
+                        name = share.name,
+                        instrumentType = "stock",  // ← просто "stock"
+                        dailyVolume = dailyVolume,
+                        volatility = volatility,
+                        price = price
+                    )
+                } catch (e: Exception) {
+                    logger.error(e) { "Ошибка анализа ${share.ticker}" }
+                    null
                 }
-                .awaitAll()
-                .filterNotNull()
-                .sortedByDescending { it.dailyVolume }
-                .take(maxCount)
-        }
-
-        // Итоговая статистика
-        logger.info { "========== СТАТИСТИКА ОТБОРА ==========" }
-        logger.info { "❌ Отсеяно по объёму: $failedVolume" }
-        logger.info { "❌ Отсеяно по волатильности: $failedVolatility" }
-        logger.info { "❌ Ошибки при анализе: $otherErrors" }
-        logger.info { "🎯 Итоговый список (${selected.size} инструментов):" }
-
-        if (selected.isEmpty()) {
-            logger.warn { "⚠️ НЕ ОТОБРАНО НИ ОДНОГО ИНСТРУМЕНТА! Проверьте настройки фильтрации." }
-        } else {
-            selected.forEachIndexed { index, instrument ->
-                logger.info { "  ${index + 1}. ${instrument.ticker} (${instrument.instrumentType}): ${instrument.name} | цена=${instrument.price}, объём=${instrument.dailyVolume}, волатильность=${String.format("%.2f", instrument.volatility)}%" }
             }
-        }
+            .sortedByDescending { it.dailyVolume }
+            .take(maxCount)
 
-        logger.info { "========== КОНЕЦ ОТБОРА ==========" }
+        logger.info { "🎯 Итоговый список (${selected.size} инструментов):" }
+        selected.forEachIndexed { index, instrument ->
+            logger.info { "  ${index + 1}. ${instrument.ticker} (${instrument.name}): цена=${instrument.price}, объём=${instrument.dailyVolume}, волатильность=${String.format("%.2f", instrument.volatility)}%" }
+        }
 
         return selected
-    }
-
-    /**
-     * 🆕 Получение типа инструмента по UID
-     */
-    private fun getInstrumentType(instrumentUid: String): String {
-        return try {
-            val share = instrumentsService.getShareByUidSync(instrumentUid)
-            val type = when (share.shareType) {
-                ShareType.SHARE_TYPE_COMMON -> "stock"
-                ShareType.SHARE_TYPE_PREFERRED -> "preferred_share"
-                ShareType.SHARE_TYPE_ADR -> "adr"
-                ShareType.SHARE_TYPE_GDR -> "gdr"
-                else -> "stock"
-            }
-            logger.info { "✅ ${share.ticker}: тип = $type" }  // ← добавить лог
-            type
-        } catch (e: Exception) {
-            logger.warn { "❌ Не удалось определить тип для $instrumentUid: ${e.message}" }
-            "unknown"
-        }
     }
 
     /**

@@ -213,12 +213,7 @@ class TradingBotService(
             minDailyVolume = filterProperties.minDailyVolume,
             minVolatility = filterProperties.minVolatility,
             maxVolatility = filterProperties.maxVolatility,
-            maxCount = filterProperties.maxCount,
-            allowedCategories = listOf(
-                InstrumentSelector.InstrumentCategory.STOCK,
-                InstrumentSelector.InstrumentCategory.BOND,
-                InstrumentSelector.InstrumentCategory.ETF
-            )  // 🆕 только акции, облигации и ETF
+            maxCount = filterProperties.maxCount
         )
 
         _activeInstruments.value = selectedInstruments.map { it.uid }
