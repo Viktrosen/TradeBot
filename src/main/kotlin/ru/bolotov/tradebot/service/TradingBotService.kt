@@ -146,6 +146,7 @@ class TradingBotService(
                 //    accountId = existingAccounts.firstOrNull()?.id
                 //    logger.info { "Используем существующий Sandbox-счёт: $accountId" }
                 //} else {
+                    closeAllSandboxAccounts()
                     val newAccount = sandboxService.openAccountSync()
                     accountId = newAccount
                     logger.info { "Создан новый Sandbox-счёт: $accountId" }
@@ -179,6 +180,31 @@ class TradingBotService(
             }
         } catch (e: Exception) {
             logger.error(e) { "Ошибка получения/создания accountId" }
+        }
+    }
+
+    private suspend fun closeAllSandboxAccounts() {
+        try {
+            val accounts = sandboxService.getAccountsSync()
+            if (accounts.isEmpty()) {
+                logger.info { "Нет активных sandbox-счетов для закрытия" }
+                return
+            }
+
+            logger.info { "Найдено ${accounts.size} sandbox-счет(ов). Начинаем закрытие..." }
+
+            for (account in accounts) {
+                try {
+                    sandboxService.closeAccountSync(account.id)
+                    logger.info { "✅ Закрыт sandbox-счёт: ${account.id}"}
+                } catch (e: Exception) {
+                    logger.warn(e) { "⚠️ Не удалось закрыть счёт ${account.id}: ${e.message}" }
+                }
+            }
+
+            logger.info { "Завершено закрытие sandbox-счетов" }
+        } catch (e: Exception) {
+            logger.error(e) { "Ошибка при закрытии sandbox-счетов" }
         }
     }
 

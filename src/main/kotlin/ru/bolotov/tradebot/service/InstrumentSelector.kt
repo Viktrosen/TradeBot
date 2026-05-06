@@ -174,25 +174,19 @@ class InstrumentSelector(
      */
     private fun getInstrumentType(instrumentUid: String): String {
         return try {
-            // Пробуем получить как акцию
             val share = instrumentsService.getShareByUidSync(instrumentUid)
-            if (share.shareType == ShareType.SHARE_TYPE_COMMON) return "stock"
-            if (share.shareType == ShareType .SHARE_TYPE_PREFERRED) return "preferred_share"
-            return "stock"
-        } catch (e: Exception) {
-            try {
-                // Пробуем как облигацию
-                val bond = instrumentsService.getBondByUidSync(instrumentUid)
-                return "bond"
-            } catch (e2: Exception) {
-                try {
-                    // Пробуем как ETF
-                    val etf = instrumentsService.getEtfByUidSync(instrumentUid)
-                    return "etf"
-                } catch (e3: Exception) {
-                    "unknown"
-                }
+            val type = when (share.shareType) {
+                ShareType.SHARE_TYPE_COMMON -> "stock"
+                ShareType.SHARE_TYPE_PREFERRED -> "preferred_share"
+                ShareType.SHARE_TYPE_ADR -> "adr"
+                ShareType.SHARE_TYPE_GDR -> "gdr"
+                else -> "stock"
             }
+            logger.info { "✅ ${share.ticker}: тип = $type" }  // ← добавить лог
+            type
+        } catch (e: Exception) {
+            logger.warn { "❌ Не удалось определить тип для $instrumentUid: ${e.message}" }
+            "unknown"
         }
     }
 
