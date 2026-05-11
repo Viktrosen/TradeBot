@@ -111,14 +111,17 @@ class TradingBotService(
                     strategyManager.switchToSimpleStrategy(config.name)
                     logger.info { "📂 Загружена сохранённая простая стратегия: ${config.name}" }
                 }
+
                 is LoadedConfig.Voting -> {
                     strategyManager.switchToVotingStrategy(config.weights)
                     logger.info { "📂 Загружена сохранённая стратегия голосования: ${config.weights}" }
                 }
+
                 is LoadedConfig.Confirmation -> {
                     strategyManager.switchToConfirmationStrategy(config.indicators)
                     logger.info { "📂 Загружена сохранённая стратегия подтверждения: ${config.indicators}" }
                 }
+
                 is LoadedConfig.Candlestick -> {
                     strategyManager.switchToCandlestickStrategy(candlestickPatternStrategy)
                     candlestickPatternStrategy.setTimeframe(
@@ -127,6 +130,7 @@ class TradingBotService(
                     candlestickPatternStrategy.minConfidence = config.minConfidence
                     logger.info { "📂 Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=${config.minConfidence}" }
                 }
+
                 null -> {
                     logger.info { "📂 Нет сохранённой конфигурации, используется стратегия по умолчанию (Cross EMA)" }
                     strategyManager.switchToSimpleStrategy("ema")
@@ -142,15 +146,15 @@ class TradingBotService(
         try {
             if (sandboxEnabled) {
                 val existingAccounts = sandboxService.getAccountsSync()
-                //if (existingAccounts.isNotEmpty()) {
-                //    accountId = existingAccounts.firstOrNull()?.id
-                //    logger.info { "Используем существующий Sandbox-счёт: $accountId" }
-                //} else {
+                if (existingAccounts.isNotEmpty()) {
+                    accountId = existingAccounts.firstOrNull()?.id
+                    logger.info { "Используем существующий Sandbox-счёт: $accountId" }
+                } else {
                     closeAllSandboxAccounts()
                     val newAccount = sandboxService.openAccountSync()
                     accountId = newAccount
                     logger.info { "Создан новый Sandbox-счёт: $accountId" }
-                //}
+                }
 
                 if (accountId != null) {
                     try {
@@ -196,7 +200,7 @@ class TradingBotService(
             for (account in accounts) {
                 try {
                     sandboxService.closeAccountSync(account.id)
-                    logger.info { "✅ Закрыт sandbox-счёт: ${account.id}"}
+                    logger.info { "✅ Закрыт sandbox-счёт: ${account.id}" }
                 } catch (e: Exception) {
                     logger.warn(e) { "⚠️ Не удалось закрыть счёт ${account.id}: ${e.message}" }
                 }
@@ -365,10 +369,12 @@ class TradingBotService(
                 logger.warn { "🛑 Стоп-лосс для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
                 true
             }
+
             pnlPercent >= takeProfitPercent -> {
                 logger.info { "🎯 Тейк-профит для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
                 true
             }
+
             else -> false
         }
     }
@@ -611,7 +617,13 @@ class TradingBotService(
 
             _openPositions.value += (marketData.instrumentId to newPosition)
 
-            logger.info { "📈 Открыта позиция: $direction ${marketData.instrumentName} (${positionSize.quantity} лотов, ${"%.0f".format(positionSize.value)} ₽, ${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)" }
+            logger.info {
+                "📈 Открыта позиция: $direction ${marketData.instrumentName} (${positionSize.quantity} лотов, ${
+                    "%.0f".format(
+                        positionSize.value
+                    )
+                } ₽, ${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)"
+            }
 
             // RabbitMQ (закомментировано)
             eventPublisherService.publishTradeExecuted(savedEvent)
@@ -881,11 +893,12 @@ class TradingBotService(
                     val entryTime = Instant.now().minusSeconds(3600)
 
                     // Ищем существующий TradeEvent с OPEN по этой позиции
-                    val existingOpenEvent = tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
-                        instrumentUid,
-                        direction,
-                        EventType.OPEN
-                    )
+                    val existingOpenEvent =
+                        tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
+                            instrumentUid,
+                            direction,
+                            EventType.OPEN
+                        )
 
                     val positionId = existingOpenEvent?.positionId ?: UUID.randomUUID().toString()
 
@@ -902,8 +915,10 @@ class TradingBotService(
                     )
 
                     restoredPositions[instrumentUid] = restoredPosition
-                    logger.info { "📦 Восстановлена позиция: ${restoredPosition.direction} ${restoredPosition.instrumentName} " +
-                            "(${restoredPosition.quantity} лотов по ${restoredPosition.entryPrice} ₽)" }
+                    logger.info {
+                        "📦 Восстановлена позиция: ${restoredPosition.direction} ${restoredPosition.instrumentName} " +
+                                "(${restoredPosition.quantity} лотов по ${restoredPosition.entryPrice} ₽)"
+                    }
 
                 } catch (e: Exception) {
                     logger.error(e) { "❌ Ошибка восстановления позиции ${pos.instrumentUid}" }
