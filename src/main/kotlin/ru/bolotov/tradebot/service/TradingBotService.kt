@@ -123,11 +123,18 @@ class TradingBotService(
                 }
 
                 is LoadedConfig.Candlestick -> {
-                    strategyManager.switchToCandlestickStrategy(candlestickPatternStrategy)
-                    candlestickPatternStrategy.setTimeframe(
+                    // 🆕 Исправлено: передаём таймфрейм и уверенность
+                    val timeframe = try {
                         CandlestickPatternStrategy.CandleTimeframe.valueOf(config.timeframe)
-                    )
+                    } catch (e: IllegalArgumentException) {
+                        CandlestickPatternStrategy.CandleTimeframe.M5
+                    }
+
+                    candlestickPatternStrategy.setTimeframe(timeframe)
                     candlestickPatternStrategy.minConfidence = config.minConfidence
+
+                    strategyManager.switchToCandlestickStrategy()  // ← без параметров
+
                     logger.info { "📂 Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=${config.minConfidence}" }
                 }
 
@@ -751,14 +758,11 @@ class TradingBotService(
     }
 
     fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
-        // Обновляем настройки свечного анализа
         candlestickPatternStrategy.setTimeframe(timeframe)
         candlestickPatternStrategy.minConfidence = minConfidence
 
-        // Переключаем стратегию (используем отдельную стратегию, а не ConfirmationStrategy)
-        strategyManager.switchToCandlestickStrategy(listOf("ENGULFING", "HAMMER", "DOJI"))
+        strategyManager.switchToCandlestickStrategy()  // ← без параметров
 
-        // Сохраняем в БД
         strategyConfigPersistenceService.saveCandlestickStrategy(
             timeframe = timeframe.name,
             minConfidence = minConfidence

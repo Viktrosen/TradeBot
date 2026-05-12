@@ -68,8 +68,21 @@ class CandlestickPatternStrategy(
     )
 
     override fun analyze(data: MarketData): Signal {
-        // Для свечных паттернов нужны исторические свечи, поэтому возвращаем HOLD
-        // Паттерны проверяются через analyzeWithCandles()
+        val patternResult = data.candlestickPattern
+        logger.info { "📊 CandlestickPatternStrategy.analyze(): инструмент=${data.instrumentName}, паттерн=${patternResult?.direction}, confidence=${patternResult?.confidence}" }
+
+        if (patternResult == null || patternResult.pattern == null) {
+            return Signal.HOLD
+        }
+
+        if (patternResult.confidence >= minConfidence) {
+            return Signal(
+                direction = patternResult.direction,
+                confidence = patternResult.confidence,
+                reason = patternResult.description
+            )
+        }
+
         return Signal.HOLD
     }
 
