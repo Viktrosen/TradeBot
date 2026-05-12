@@ -271,6 +271,7 @@ class TradingBotService(
                 .mapNotNull { lastPrice -> enrichMarketData(lastPrice) }
                 .flatMapLatest { marketData ->
                     flow {
+                        logger.info { "📊 marketData для ${marketData.instrumentName}: candlestickPattern=${marketData.candlestickPattern?.direction}" }
                         val position = _openPositions.value[marketData.instrumentId]
 
                         if (position != null && checkStopLossOrTakeProfit(position, marketData.currentPrice)) {
@@ -282,7 +283,9 @@ class TradingBotService(
                         val lastTime = lastSignalTime[marketData.instrumentId]
                         if (lastTime == null || now.toEpochMilli() - lastTime.toEpochMilli() > signalDebounceMs) {
                             val signal = strategyManager.analyze(marketData)
-                            logger.info { "🎯 АНАЛИЗ: инструмент=${marketData.instrumentName}, сигнал=${signal.direction}, уверенность=${signal.confidence}" }
+                            logger.info { "🎯 АНАЛИЗ: инструмент=${marketData.instrumentName}, " +
+                                    "паттерн=${marketData.candlestickPattern?.direction}, " +
+                                    "сигнал=${signal.direction}, уверенность=${signal.confidence}" }
                             if (signal.direction != OrderDirection.HOLD && signal.confidence > 0.5) {
                                 logger.info { "✅ СИГНАЛ ПРИНЯТ: ${marketData.instrumentName} → ${signal.direction}" }
                                 lastSignalTime[marketData.instrumentId] = now
