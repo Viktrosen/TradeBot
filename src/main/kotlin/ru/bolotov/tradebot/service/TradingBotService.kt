@@ -268,7 +268,10 @@ class TradingBotService(
             logger.info { "📡 Подключение к стриму цен для ${instruments.size} инструментов" }
 
             subscribeToLastPrices(instruments)
-                .mapNotNull { lastPrice -> enrichMarketData(lastPrice) }
+                .mapNotNull { lastPrice ->
+                    logger.info { "📩 Получена цена для ${lastPrice.instrumentUid}" }
+                    enrichMarketData(lastPrice)
+                }
                 .flatMapLatest { marketData ->
                     flow {
                         logger.info { "📊 marketData для ${marketData.instrumentName}: candlestickPattern=${marketData.candlestickPattern?.direction}" }
