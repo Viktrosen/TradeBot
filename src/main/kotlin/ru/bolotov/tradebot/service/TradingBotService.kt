@@ -282,9 +282,13 @@ class TradingBotService(
                         val lastTime = lastSignalTime[marketData.instrumentId]
                         if (lastTime == null || now.toEpochMilli() - lastTime.toEpochMilli() > signalDebounceMs) {
                             val signal = strategyManager.analyze(marketData)
+                            logger.info { "🎯 АНАЛИЗ: инструмент=${marketData.instrumentName}, сигнал=${signal.direction}, уверенность=${signal.confidence}" }
                             if (signal.direction != OrderDirection.HOLD && signal.confidence > 0.5) {
+                                logger.info { "✅ СИГНАЛ ПРИНЯТ: ${marketData.instrumentName} → ${signal.direction}" }
                                 lastSignalTime[marketData.instrumentId] = now
                                 emit(Signal.Trade(marketData, signal))
+                            } else {
+                                logger.debug { "⏸️ СИГНАЛ ОТКЛОНЁН: ${marketData.instrumentName}, причина: ${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}" }
                             }
                         }
                     }
@@ -338,12 +342,13 @@ class TradingBotService(
         return try {
             val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
 
-            // Добавляем анализ свечных паттернов
+            // 🆕 Добавь логирование
             val patternSignal = candlestickPatternStrategy.analyzeWithCandles(lastPrice.instrumentUid)
+            logger.info { "🕯️ Candlestick анализ для ${lastPrice.instrumentUid}: ${patternSignal.direction}, уверенность=${patternSignal.confidence}" }
+
             val patternResult = if (patternSignal.direction != OrderDirection.HOLD) {
-                // конвертируем Signal в PatternResult
                 CandlestickPatternStrategy.PatternResult(
-                    pattern = null,  // нужно доработать
+                    pattern = null,
                     direction = patternSignal.direction,
                     confidence = patternSignal.confidence,
                     description = patternSignal.reason ?: ""
@@ -352,7 +357,7 @@ class TradingBotService(
 
             marketData?.copy(candlestickPattern = patternResult)
         } catch (e: Exception) {
-            logger.error(e) { "Ошибка обогащения данных" }
+            logger.error(e) { "Ошибка обогащения данных для ${lastPrice.instrumentUid}" }
             null
         }
     }
@@ -500,6 +505,7 @@ class TradingBotService(
     }
 
     private suspend fun executeTrade(marketData: MarketData, signal: ru.bolotov.tradebot.strategy.Signal) {
+        logger.info { "🚀 EXECUTE TRADE: ${marketData.instrumentName}, сигнал=${signal.direction}, уверенность=${signal.confidence}" }
         val currentPosition = _openPositions.value[marketData.instrumentId]
         val signalDirection = when (signal.direction) {
             OrderDirection.BUY -> DomainOrderDirection.BUY

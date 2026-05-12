@@ -28,6 +28,8 @@ class CandlestickStrategy : ConfigurableStrategy {
     override fun analyze(data: MarketData): Signal {
         val patternResult = data.candlestickPattern
 
+        logger.info { "📊 CandlestickStrategy.analyze(): паттерн=${patternResult?.pattern}, направление=${patternResult?.direction}, уверенность=${patternResult?.confidence}" }
+
         if (patternResult == null || patternResult.pattern == null) {
             return Signal.HOLD
         }
