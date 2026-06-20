@@ -305,14 +305,16 @@ class TradingBotService(
                         val now = Instant.now()
                         val lastTime = lastSignalTime[marketData.instrumentId]
                         if (lastTime == null || now.toEpochMilli() - lastTime.toEpochMilli() > signalDebounceMs) {
-                            val signal = strategyManager.analyze(marketData)
+                            val strategy = strategyManager.getCurrentStrategy()
+                            val signal = strategy.analyze(marketData)
+                            val strategyExplanation = strategy.getExplanation(marketData)
                             logger.info { "🎯 АНАЛИЗ: инструмент=${marketData.instrumentName}, " +
                                     "паттерн=${marketData.candlestickPattern?.direction}, " +
                                     "сигнал=${signal.direction}, уверенность=${signal.confidence}" }
                             if (signal.direction != OrderDirection.HOLD && signal.confidence > 0.5) {
                                 logger.info { "✅ СИГНАЛ ПРИНЯТ: ${marketData.instrumentName} → ${signal.direction}" }
                                 lastSignalTime[marketData.instrumentId] = now
-                                emit(Signal.Trade(marketData, signal))
+                                emit(Signal.Trade(marketData, signal, strategy.name, strategyExplanation))
                             } else {
                                 logger.debug { "⏸️ СИГНАЛ ОТКЛОНЁН: ${marketData.instrumentName}, причина: ${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}" }
                             }
@@ -323,7 +325,12 @@ class TradingBotService(
                 .collect { signal ->
                     when (signal) {
                         is Signal.Close -> closePosition(signal.position)
-                        is Signal.Trade -> executeTrade(signal.marketData, signal.signal)
+                        is Signal.Trade -> executeTrade(
+                            signal.marketData,
+                            signal.signal,
+                            signal.strategyName,
+                            signal.strategyExplanation
+                        )
                     }
                 }
         }
@@ -528,7 +535,12 @@ class TradingBotService(
         logger.info { "🔄 Стратегия переключена на подтверждение: $requiredIndicators, стрим перезапущен" }
     }
 
-    private suspend fun executeTrade(marketData: MarketData, signal: ru.bolotov.tradebot.strategy.Signal) {
+    private suspend fun executeTrade(
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal,
+        strategyName: String,
+        strategyExplanation: String
+    ) {
         logger.info { "🚀 EXECUTE TRADE: ${marketData.instrumentName}, сигнал=${signal.direction}, уверенность=${signal.confidence}" }
         val currentPosition = _openPositions.value[marketData.instrumentId]
         val signalDirection = when (signal.direction) {
@@ -571,7 +583,7 @@ class TradingBotService(
                     return
                 }
 
-                openNewPosition(marketData, signal, positionSize)
+                openNewPosition(marketData, signal, positionSize, strategyName, strategyExplanation)
             }
 
             // Сигнал ПРОТИВОПОЛОЖНЫЙ позиции — закрываем
@@ -601,7 +613,9 @@ class TradingBotService(
     private suspend fun openNewPosition(
         marketData: MarketData,
         signal: ru.bolotov.tradebot.strategy.Signal,
-        positionSize: PositionSize
+        positionSize: PositionSize,
+        strategyName: String,
+        strategyExplanation: String
     ) {
         val direction = if (signal.direction == OrderDirection.BUY) {
             DomainOrderDirection.BUY
@@ -621,8 +635,8 @@ class TradingBotService(
             positionId = positionId,
             quantity = positionSize.quantity,
             totalValue = positionSize.value,
-            reason = strategyManager.getCurrentStrategy().name,
-            explanation = strategyManager.getExplanation(marketData),
+            reason = buildOpenTradeReason(strategyName, signal),
+            explanation = strategyExplanation,
             status = EventStatus.PENDING
         )
 
@@ -670,6 +684,17 @@ class TradingBotService(
             savedEvent.status = EventStatus.FAILED
             tradeEventRepository.save(savedEvent)
             logger.error { "Ошибка открытия позиции: ${orderResult.error}" }
+        }
+    }
+
+    private fun buildOpenTradeReason(
+        strategyName: String,
+        signal: ru.bolotov.tradebot.strategy.Signal
+    ): String {
+        return if (strategyName == candlestickPatternStrategy.name && !signal.reason.isNullOrBlank()) {
+            "$strategyName: ${signal.reason}"
+        } else {
+            strategyName
         }
     }
 
@@ -1074,6 +1099,11 @@ class TradingBotService(
 
 // Внутренние сигналы
 private sealed class Signal {
-    data class Trade(val marketData: MarketData, val signal: ru.bolotov.tradebot.strategy.Signal) : Signal()
+    data class Trade(
+        val marketData: MarketData,
+        val signal: ru.bolotov.tradebot.strategy.Signal,
+        val strategyName: String,
+        val strategyExplanation: String
+    ) : Signal()
     data class Close(val position: OpenPosition) : Signal()
 }

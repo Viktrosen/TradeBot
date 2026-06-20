@@ -411,6 +411,23 @@ class CandlestickPatternStrategy(
     }
 
     override fun getExplanation(data: MarketData): String {
+        val patternResult = data.candlestickPattern
+        if (patternResult?.pattern != null) {
+            return """
+                |🕯️ Анализ по свечной стратегии
+                |Таймфрейм: ${currentTimeframe.name} (${currentTimeframe.minutes} мин)
+                |
+                |Инструмент: ${data.instrumentName}
+                |Цена: ${data.currentPrice}
+                |Паттерн: ${patternResult.description}
+                |Тип: ${patternResult.pattern}
+                |Сигнал: ${patternResult.direction}
+                |Уверенность: ${"%.0f".format(patternResult.confidence * 100)}%
+                |
+                |Причина: ${patternResult.description} → ${patternResult.direction}
+            """.trimMargin()
+        }
+
         return """
             |🕯️ СВЕЧНАЯ СТРАТЕГИЯ
             |━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
