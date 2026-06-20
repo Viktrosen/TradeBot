@@ -238,19 +238,39 @@ class TradingBotService(
     }
 
     private suspend fun selectInitialInstruments() {
-        val selectedInstruments = instrumentSelector.selectTradableInstruments(
+        val selectedInstruments = selectInstrumentsByCurrentFilters()
+        applySelectedInstruments(selectedInstruments)
+    }
+
+    private suspend fun selectInstrumentsByCurrentFilters(): List<SelectedInstrument> {
+        return instrumentSelector.selectTradableInstruments(
             minDailyVolume = filterProperties.minDailyVolume,
             minVolatility = filterProperties.minVolatility,
             maxVolatility = filterProperties.maxVolatility,
             maxCount = filterProperties.maxCount
         )
+    }
 
+    private fun applySelectedInstruments(selectedInstruments: List<SelectedInstrument>) {
         _activeInstruments.value = selectedInstruments.map { it.uid }
-        logger.info { "Отобрано ${_activeInstruments.value.size} инструментов для торговли" }
+        logger.info { "Selected ${_activeInstruments.value.size} instruments for trading" }
         selectedInstruments.forEach { instrument ->
-            logger.info { "  - ${instrument.ticker} (${instrument.instrumentType}): цена=${instrument.price}" }
+            logger.info { "  - ${instrument.ticker} (${instrument.instrumentType}): price=${instrument.price}" }
         }
     }
+
+    suspend fun rescanInstruments(): List<String> {
+        val selectedInstruments = selectInstrumentsByCurrentFilters()
+        applySelectedInstruments(selectedInstruments)
+
+        if (_isRunning.value) {
+            priceStreamJob?.cancel()
+            startPriceStream()
+        }
+
+        return _activeInstruments.value
+    }
+
 
     suspend fun start() {
         if (_isRunning.value) {

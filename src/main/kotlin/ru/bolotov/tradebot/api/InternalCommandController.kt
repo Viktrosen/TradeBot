@@ -176,6 +176,22 @@ class InternalCommandController(
         return ResponseEntity.ok(mapOf("status" to "updated", "filters" to request))
     }
 
+    @PostMapping("/instruments/rescan")
+    fun rescanInstruments(): ResponseEntity<Map<String, Any>> {
+        val instruments = runBlocking {
+            tradingBotService.rescanInstruments()
+        }
+
+        return ResponseEntity.ok(
+            mapOf(
+                "status" to "rescanned",
+                "count" to instruments.size,
+                "instruments" to instruments,
+                "running" to tradingBotService.getStatus()
+            )
+        )
+    }
+
     // ==================== ПОЗИЦИИ ====================
 
     @GetMapping("/positions")
