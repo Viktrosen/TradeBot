@@ -29,6 +29,7 @@ data class MarketData(
     val instrumentId: String,
     val instrumentName: String,
     val currentPrice: BigDecimal,
+    val lotSize: Int = 1,
     val ema5: BigDecimal?,
     val ema21: BigDecimal?,
     val rsi: Double?,

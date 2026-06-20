@@ -558,8 +558,16 @@ class TradingBotService(
                     currentPositions = _openPositions.value
                 )
 
-                if (!hasEnoughFunds(positionSize.value)) {
-                    logger.warn { "❌ Недостаточно средств: нужно ${positionSize.value}, доступно $availableCapital" }
+                val estimatedOrderAmount = orderExecutionService.estimateOrderAmount(
+                    accountId = accountId!!,
+                    instrumentId = marketData.instrumentId,
+                    quantity = positionSize.quantity,
+                    price = marketData.currentPrice,
+                    direction = "BUY"
+                ) ?: positionSize.value
+
+                if (!hasEnoughFunds(estimatedOrderAmount)) {
+                    logger.warn { "❌ Недостаточно средств: нужно $estimatedOrderAmount, доступно $availableCapital" }
                     return
                 }
 

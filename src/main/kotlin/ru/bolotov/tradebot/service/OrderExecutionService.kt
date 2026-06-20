@@ -97,6 +97,33 @@ class OrderExecutionService(
         }
     }
 
+    fun estimateOrderAmount(
+        accountId: String,
+        instrumentId: String,
+        quantity: Long,
+        price: BigDecimal,
+        direction: String
+    ): BigDecimal? {
+        return try {
+            val tinkoffDirection = if (direction == "BUY")
+                TinkoffOrderDirection.ORDER_DIRECTION_BUY
+            else
+                TinkoffOrderDirection.ORDER_DIRECTION_SELL
+
+            val response = ordersService.getOrderPriceSync(
+                accountId,
+                instrumentId,
+                quantity,
+                quotationFromBigDecimal(price),
+                tinkoffDirection
+            )
+            moneyValueToBigDecimal(response.totalOrderAmount)
+        } catch (e: Exception) {
+            logger.warn(e) { "Не удалось получить предварительную стоимость заявки" }
+            null
+        }
+    }
+
     private fun quotationFromBigDecimal(value: BigDecimal): Quotation {
         val units = value.toLong()
         val nano = value.remainder(BigDecimal.ONE).multiply(BigDecimal.valueOf(1_000_000_000)).toInt()

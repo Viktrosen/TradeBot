@@ -23,7 +23,8 @@ class MarketDataProvider(
 
     data class InstrumentInfo(
         val ticker: String,
-        val name: String
+        val name: String,
+        val lotSize: Int
     )
 
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
@@ -69,6 +70,7 @@ class MarketDataProvider(
                 instrumentId = instrumentUid,
                 instrumentName = displayName,
                 currentPrice = currentPrice,
+                lotSize = instrumentInfo?.lotSize ?: 1,
                 ema5 = ema5,
                 ema21 = ema21,
                 rsi = rsi,
@@ -125,7 +127,8 @@ class MarketDataProvider(
             val instrument = response.instrument
             val info = InstrumentInfo(
                 ticker = instrument.ticker,
-                name = instrument.name
+                name = instrument.name,
+                lotSize = instrument.lot
             )
             instrumentCache[instrumentUid] = info
             info
@@ -134,7 +137,8 @@ class MarketDataProvider(
                 val share = instrumentsService.getShareByUidSync(instrumentUid)
                 val info = InstrumentInfo(
                     ticker = share.ticker,
-                    name = share.name
+                    name = share.name,
+                    lotSize = share.lot
                 )
                 instrumentCache[instrumentUid] = info
                 info

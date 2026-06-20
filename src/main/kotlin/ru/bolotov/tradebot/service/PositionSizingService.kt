@@ -20,6 +20,8 @@ class PositionSizingService(
         currentPositions: Map<String, OpenPosition>
     ): PositionSize {
         val price = marketData.currentPrice
+        val lotSize = marketData.lotSize.toBigDecimal()
+        val lotPrice = price * lotSize
         val atr = marketData.atr ?: (price * BigDecimal("0.01"))
         val stopDistance = atr * BigDecimal("1.5")
         val stopLossPrice = price - stopDistance
@@ -34,24 +36,24 @@ class PositionSizingService(
         }.toBigDecimal()
         val freeCapital = availableCapital - usedCapital
         val targetCapitalPerPosition = freeCapital / (maxPositions - currentPositions.size).coerceAtLeast(1).toBigDecimal()
-        val allocationBasedQuantity = (targetCapitalPerPosition / price).toLong()
+        val allocationBasedQuantity = (targetCapitalPerPosition / lotPrice).toLong()
 
         val rawQuantity = minOf(riskBasedQuantity, allocationBasedQuantity)
             .coerceAtLeast(1L)
-            .coerceAtMost((config.maxPositionSize.toBigDecimal() / price).toLong())
+            .coerceAtMost((config.maxPositionSize.toBigDecimal() / lotPrice).toLong())
 
-        val positionValue = price * BigDecimal.valueOf(rawQuantity)
+        val positionValue = lotPrice * BigDecimal.valueOf(rawQuantity)
         val finalQuantity = if (positionValue < config.minPositionSize.toBigDecimal() && availableCapital > config.minPositionSize.toBigDecimal()) {
-            (config.minPositionSize.toBigDecimal() / price).toLong().coerceAtLeast(1L)
+            (config.minPositionSize.toBigDecimal() / lotPrice).toLong().coerceAtLeast(1L)
         } else {
             rawQuantity
         }
 
-        val finalValue = price * BigDecimal.valueOf(finalQuantity)
+        val finalValue = lotPrice * BigDecimal.valueOf(finalQuantity)
         val capitalUsagePercent = (finalValue / availableCapital * BigDecimal(100)).toDouble()
 
         logger.info { "📊 Расчёт позиции для ${marketData.instrumentName}" }
-        logger.info { "   Цена: $price, ATR: $atr, стоп: $stopDistance (${stopLossPrice})" }
+        logger.info { "   Цена: $price, лотность: ${marketData.lotSize}, цена лота: $lotPrice, ATR: $atr, стоп: $stopDistance (${stopLossPrice})" }
         logger.info { "   Риск-ориент: $riskBasedQuantity лотов (${"%.0f".format(riskAmount)} ₽)" }
         logger.info { "   Капитал-ориент: $allocationBasedQuantity лотов (${"%.0f".format(targetCapitalPerPosition)} ₽)" }
         logger.info { "   Итог: $finalQuantity лотов на ${"%.0f".format(finalValue)} ₽ (${"%.1f".format(capitalUsagePercent)}%)" }
