@@ -22,4 +22,9 @@ interface TradeEventRepository : JpaRepository<TradeEvent, String> {
         direction: OrderDirection,
         eventType: EventType
     ): TradeEvent?
+
+    fun existsByPositionIdAndEventType(
+        positionId: String,
+        eventType: EventType
+    ): Boolean
 }

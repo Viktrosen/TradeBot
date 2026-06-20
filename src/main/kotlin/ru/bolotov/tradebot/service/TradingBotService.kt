@@ -93,6 +93,7 @@ class TradingBotService(
     private val emergencyCloseChunkDelayMs = 1500L
 
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
+    private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
     private val signalDebounceMs = 5000L
     private var isPortfolioRestored = false
     private var isClosingPositions = false
@@ -419,6 +420,9 @@ class TradingBotService(
         val marketData = marketDataProvider.fetchMarketData(position.instrumentId) ?: return
 
         val directionStr = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
+        if (!tryMarkPositionClosing(position, directionStr)) return
+
+        try {
         val orderResult = orderExecutionService.placeOrder(
             accountId = accountId!!,
             instrumentId = position.instrumentId,
@@ -428,15 +432,22 @@ class TradingBotService(
         )
 
         if (orderResult.success) {
-            val pnl = calculatePnl(position, marketData.currentPrice)
+            val fill = waitForCloseFill(position, orderResult) ?: return
+            val closePrice = fill.executedPrice ?: marketData.currentPrice
+            val pnl = calculatePnl(position, closePrice)
 
             logger.info { "✅ Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
 
-            _openPositions.value = _openPositions.value - position.instrumentId
-            saveCloseEvent(marketData, position, pnl, "CLOSE")
+            _openPositions.value -= position.instrumentId
+            saveCloseEventOnce(marketData.copy(currentPrice = closePrice), position, pnl, "CLOSE")
             eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
+            closingPositionIds.remove(position.positionId)
+        }
+        } catch (e: Exception) {
+            closingPositionIds.remove(position.positionId)
+            throw e
         }
     }
 
@@ -444,6 +455,9 @@ class TradingBotService(
         val marketData = marketDataProvider.fetchMarketData(position.instrumentId) ?: return
 
         val directionStr = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
+        if (!tryMarkPositionClosing(position, directionStr)) return
+
+        try {
         val orderResult = orderExecutionService.placeOrder(
             accountId = accountId!!,
             instrumentId = position.instrumentId,
@@ -453,17 +467,24 @@ class TradingBotService(
         )
 
         if (orderResult.success) {
-            val pnl = calculatePnl(position, marketData.currentPrice)
+            val fill = waitForCloseFill(position, orderResult) ?: return
+            val closePrice = fill.executedPrice ?: marketData.currentPrice
+            val pnl = calculatePnl(position, closePrice)
 
             logger.info { "✅ Позиция закрыта по сигналу: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
 
-            _openPositions.value = _openPositions.value - position.instrumentId
-            saveCloseEvent(marketData, position, pnl, "SIGNAL_CLOSE")
+            _openPositions.value -= position.instrumentId
+            saveCloseEventOnce(marketData.copy(currentPrice = closePrice), position, pnl, "SIGNAL_CLOSE")
 
             // RabbitMQ (закомментировано)
             eventPublisherService.publishPortfolioChanged()
         } else {
             logger.error { "❌ Ошибка закрытия позиции: ${orderResult.error}" }
+            closingPositionIds.remove(position.positionId)
+        }
+        } catch (e: Exception) {
+            closingPositionIds.remove(position.positionId)
+            throw e
         }
     }
 
@@ -473,6 +494,80 @@ class TradingBotService(
         } else {
             (position.entryPrice - closePrice) * BigDecimal.valueOf(position.quantity)
         }
+    }
+
+    private fun tryMarkPositionClosing(position: OpenPosition, closeDirection: String): Boolean {
+        if (tradeEventRepository.existsByPositionIdAndEventType(position.positionId, EventType.CLOSE)) {
+            logger.warn { "⏸️ Позиция уже имеет CLOSE-событие, пропускаем повторное закрытие: ${position.positionId}" }
+            _openPositions.value -= position.instrumentId
+            return false
+        }
+
+        val activeCloseOrder = orderExecutionService.findActiveOrder(
+            accountId = accountId!!,
+            instrumentId = position.instrumentId,
+            direction = closeDirection
+        )
+        if (activeCloseOrder != null) {
+            logger.warn {
+                "⏸️ У брокера уже есть активная заявка на закрытие ${position.instrumentName}: " +
+                        "${activeCloseOrder.orderId}, status=${activeCloseOrder.executionStatus}"
+            }
+            closingPositionIds.add(position.positionId)
+            return false
+        }
+
+        if (!closingPositionIds.add(position.positionId)) {
+            logger.warn { "⏸️ Позиция уже закрывается, пропускаем дубль: ${position.positionId}" }
+            return false
+        }
+
+        return true
+    }
+
+    private suspend fun waitForCloseFill(
+        position: OpenPosition,
+        orderResult: OrderResult
+    ): OrderFillResult? {
+        val orderId = orderResult.orderId
+        if (orderId.isNullOrBlank()) {
+            logger.warn { "⚠️ Нет orderId для закрытия ${position.instrumentName}; CLOSE не сохраняем" }
+            closingPositionIds.remove(position.positionId)
+            return null
+        }
+
+        val fill = orderExecutionService.waitForOrderFill(accountId!!, orderId)
+        if (!fill.filled) {
+            logger.warn {
+                "⏳ Заявка на закрытие ${position.instrumentName} пока не исполнена: " +
+                        "orderId=$orderId, status=${fill.executionStatus}. CLOSE не сохраняем."
+            }
+            if (fill.executionStatus != "TIMEOUT_WAITING_FILL") {
+                closingPositionIds.remove(position.positionId)
+            }
+            return null
+        }
+
+        closingPositionIds.remove(position.positionId)
+        return fill
+    }
+
+    private fun saveCloseEventOnce(data: MarketData, position: OpenPosition, pnl: BigDecimal, reason: String) {
+        if (tradeEventRepository.existsByPositionIdAndEventType(position.positionId, EventType.CLOSE)) {
+            logger.warn { "⏸️ CLOSE-событие уже существует, не пишем дубль: ${position.positionId}" }
+            return
+        }
+
+        saveCloseEvent(data, position, pnl, reason)
+    }
+
+    private fun saveCloseEventOnce(position: OpenPosition, closePrice: BigDecimal, pnl: BigDecimal, reason: String) {
+        if (tradeEventRepository.existsByPositionIdAndEventType(position.positionId, EventType.CLOSE)) {
+            logger.warn { "⏸️ CLOSE-событие уже существует, не пишем дубль: ${position.positionId}" }
+            return
+        }
+
+        saveCloseEvent(position, closePrice, pnl, reason)
     }
 
     private fun startScheduler() {
@@ -842,12 +937,13 @@ class TradingBotService(
     }
 
     private suspend fun closePositionWithRetry(position: OpenPosition, maxRetries: Int = 3): Boolean {
+        val closeDirection = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
+        if (!tryMarkPositionClosing(position, closeDirection)) return false
+
         var lastError: Exception? = null
 
         for (attempt in 1..maxRetries) {
             try {
-                val closeDirection = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
-
                 logger.info {
                     "💰 Экстренное закрытие ${position.instrumentName}: " +
                             "$closeDirection ${position.quantity} лотов рыночной заявкой"
@@ -861,12 +957,13 @@ class TradingBotService(
                 )
 
                 if (orderResult.success) {
-                    val closePrice = orderResult.executedPrice ?: position.entryPrice
+                    val fill = waitForCloseFill(position, orderResult) ?: return false
+                    val closePrice = fill.executedPrice ?: orderResult.executedPrice ?: position.entryPrice
                     val pnl = calculatePnl(position, closePrice)
                     logger.info { "✅ Закрыта позиция: ${position.instrumentName}, P&L: $pnl ₽" }
 
                     _openPositions.value = _openPositions.value - position.instrumentId
-                    saveCloseEvent(position, closePrice, pnl, "EMERGENCY_CLOSE")
+                    saveCloseEventOnce(position, closePrice, pnl, "EMERGENCY_CLOSE")
                     return true
                 } else {
                     lastError = Exception(orderResult.error)
@@ -884,6 +981,7 @@ class TradingBotService(
         }
 
         logger.error { "❌ Не удалось закрыть позицию ${position.instrumentName} после $maxRetries попыток: ${lastError?.message}" }
+        closingPositionIds.remove(position.positionId)
         return false
     }
 
@@ -966,9 +1064,16 @@ class TradingBotService(
                             instrumentUid,
                             direction,
                             EventType.OPEN
-                        )
+                    )
 
                     val positionId = existingOpenEvent?.positionId ?: UUID.randomUUID().toString()
+                    if (tradeEventRepository.existsByPositionIdAndEventType(positionId, EventType.CLOSE)) {
+                        logger.info {
+                            "⏸️ Не восстанавливаем позицию ${instrumentInfo.name}: " +
+                                    "по positionId=$positionId уже есть CLOSE-событие"
+                        }
+                        continue
+                    }
 
                     val restoredPosition = OpenPosition(
                         positionId = positionId,

@@ -1,9 +1,11 @@
 package ru.bolotov.tradebot.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.delay
 import org.springframework.stereotype.Service
 import ru.tinkoff.piapi.contract.v1.MoneyValue
 import ru.tinkoff.piapi.contract.v1.OrderDirection as TinkoffOrderDirection
+import ru.tinkoff.piapi.contract.v1.OrderExecutionReportStatus
 import ru.tinkoff.piapi.contract.v1.OrderType
 import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.tinkoff.piapi.core.OrdersService
@@ -124,6 +126,71 @@ class OrderExecutionService(
         }
     }
 
+    fun findActiveOrder(
+        accountId: String,
+        instrumentId: String,
+        direction: String
+    ): ActiveOrderInfo? {
+        val tinkoffDirection = toTinkoffDirection(direction)
+        return ordersService.getOrdersSync(accountId)
+            .firstOrNull {
+                it.instrumentUid == instrumentId &&
+                        it.direction == tinkoffDirection &&
+                        it.executionReportStatus in activeOrderStatuses
+            }
+            ?.let {
+                ActiveOrderInfo(
+                    orderId = it.orderId,
+                    executionStatus = it.executionReportStatus.name
+                )
+            }
+    }
+
+    suspend fun waitForOrderFill(
+        accountId: String,
+        orderId: String,
+        maxAttempts: Int = 10,
+        delayMs: Long = 1000L
+    ): OrderFillResult {
+        repeat(maxAttempts) { attempt ->
+            val state = ordersService.getOrderStateSync(accountId, orderId)
+            val status = state.executionReportStatus
+
+            if (status == OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL) {
+                return OrderFillResult(
+                    filled = true,
+                    executedPrice = moneyValueToBigDecimal(state.executedOrderPrice)
+                        ?: moneyValueToBigDecimal(state.averagePositionPrice),
+                    lotsRequested = state.lotsRequested,
+                    lotsExecuted = state.lotsExecuted,
+                    executionStatus = status.name
+                )
+            }
+
+            if (status in terminalUnfilledStatuses) {
+                return OrderFillResult(
+                    filled = false,
+                    lotsRequested = state.lotsRequested,
+                    lotsExecuted = state.lotsExecuted,
+                    executionStatus = status.name
+                )
+            }
+
+            if (attempt < maxAttempts - 1) {
+                delay(delayMs)
+            }
+        }
+
+        return OrderFillResult(
+            filled = false,
+            executionStatus = "TIMEOUT_WAITING_FILL"
+        )
+    }
+
+    private fun toTinkoffDirection(direction: String): TinkoffOrderDirection =
+        if (direction == "BUY") TinkoffOrderDirection.ORDER_DIRECTION_BUY
+        else TinkoffOrderDirection.ORDER_DIRECTION_SELL
+
     private fun quotationFromBigDecimal(value: BigDecimal): Quotation {
         val units = value.toLong()
         val nano = value.remainder(BigDecimal.ONE).multiply(BigDecimal.valueOf(1_000_000_000)).toInt()
@@ -139,12 +206,37 @@ class OrderExecutionService(
             .add(BigDecimal.valueOf(value.nano.toLong(), 9))
             .takeIf { it > BigDecimal.ZERO }
     }
+
+    companion object {
+        private val activeOrderStatuses = setOf(
+            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_NEW,
+            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_PARTIALLYFILL
+        )
+
+        private val terminalUnfilledStatuses = setOf(
+            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_REJECTED,
+            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_CANCELLED
+        )
+    }
 }
 
 data class OrderResult(
     val success: Boolean,
     val orderId: String? = null,
     val error: String? = null,
+    val executedPrice: BigDecimal? = null,
+    val lotsRequested: Long? = null,
+    val lotsExecuted: Long? = null,
+    val executionStatus: String? = null
+)
+
+data class ActiveOrderInfo(
+    val orderId: String,
+    val executionStatus: String
+)
+
+data class OrderFillResult(
+    val filled: Boolean,
     val executedPrice: BigDecimal? = null,
     val lotsRequested: Long? = null,
     val lotsExecuted: Long? = null,
