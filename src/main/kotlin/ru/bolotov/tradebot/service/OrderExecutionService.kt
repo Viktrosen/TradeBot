@@ -50,7 +50,10 @@ class OrderExecutionService(
             OrderResult(
                 success = true,
                 orderId = order.orderId,
-                executedPrice = moneyValueToBigDecimal(order.executedOrderPrice),
+                executedPrice = moneyValueToBigDecimal(order.initialSecurityPrice),
+                executedOrderAmount = moneyValueToBigDecimal(order.executedOrderPrice),
+                totalOrderAmount = moneyValueToBigDecimal(order.totalOrderAmount),
+                executedCommission = moneyValueToBigDecimal(order.executedCommission),
                 lotsRequested = order.lotsRequested,
                 lotsExecuted = order.lotsExecuted,
                 executionStatus = order.executionReportStatus.name
@@ -88,7 +91,10 @@ class OrderExecutionService(
             OrderResult(
                 success = true,
                 orderId = order.orderId,
-                executedPrice = moneyValueToBigDecimal(order.executedOrderPrice),
+                executedPrice = moneyValueToBigDecimal(order.initialSecurityPrice),
+                executedOrderAmount = moneyValueToBigDecimal(order.executedOrderPrice),
+                totalOrderAmount = moneyValueToBigDecimal(order.totalOrderAmount),
+                executedCommission = moneyValueToBigDecimal(order.executedCommission),
                 lotsRequested = order.lotsRequested,
                 lotsExecuted = order.lotsExecuted,
                 executionStatus = order.executionReportStatus.name
@@ -159,8 +165,10 @@ class OrderExecutionService(
             if (status == OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL) {
                 return OrderFillResult(
                     filled = true,
-                    executedPrice = moneyValueToBigDecimal(state.executedOrderPrice)
-                        ?: moneyValueToBigDecimal(state.averagePositionPrice),
+                    executedPrice = moneyValueToBigDecimal(state.averagePositionPrice),
+                    executedOrderAmount = moneyValueToBigDecimal(state.executedOrderPrice),
+                    totalOrderAmount = moneyValueToBigDecimal(state.totalOrderAmount),
+                    executedCommission = moneyValueToBigDecimal(state.executedCommission),
                     lotsRequested = state.lotsRequested,
                     lotsExecuted = state.lotsExecuted,
                     executionStatus = status.name
@@ -225,6 +233,9 @@ data class OrderResult(
     val orderId: String? = null,
     val error: String? = null,
     val executedPrice: BigDecimal? = null,
+    val executedOrderAmount: BigDecimal? = null,
+    val totalOrderAmount: BigDecimal? = null,
+    val executedCommission: BigDecimal? = null,
     val lotsRequested: Long? = null,
     val lotsExecuted: Long? = null,
     val executionStatus: String? = null
@@ -238,6 +249,9 @@ data class ActiveOrderInfo(
 data class OrderFillResult(
     val filled: Boolean,
     val executedPrice: BigDecimal? = null,
+    val executedOrderAmount: BigDecimal? = null,
+    val totalOrderAmount: BigDecimal? = null,
+    val executedCommission: BigDecimal? = null,
     val lotsRequested: Long? = null,
     val lotsExecuted: Long? = null,
     val executionStatus: String? = null

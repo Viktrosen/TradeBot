@@ -45,6 +45,8 @@ data class OpenPosition(
     val direction: DomainOrderDirection,
     val entryPrice: BigDecimal,
     val quantity: Long,
+    val lotSize: Int = 1,
+    val entryCommission: BigDecimal = BigDecimal.ZERO,
     val entryTime: Instant,
     val stopLossPrice: BigDecimal? = null,  // 🆕
     val atr: BigDecimal? = null             // 🆕
@@ -434,7 +436,8 @@ class TradingBotService(
         if (orderResult.success) {
             val fill = waitForCloseFill(position, orderResult) ?: return
             val closePrice = fill.executedPrice ?: marketData.currentPrice
-            val pnl = calculatePnl(position, closePrice)
+            val closeCommission = fill.executedCommission ?: BigDecimal.ZERO
+            val pnl = calculatePnl(position, closePrice, closeCommission)
 
             logger.info { "✅ Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
 
@@ -469,7 +472,8 @@ class TradingBotService(
         if (orderResult.success) {
             val fill = waitForCloseFill(position, orderResult) ?: return
             val closePrice = fill.executedPrice ?: marketData.currentPrice
-            val pnl = calculatePnl(position, closePrice)
+            val closeCommission = fill.executedCommission ?: BigDecimal.ZERO
+            val pnl = calculatePnl(position, closePrice, closeCommission)
 
             logger.info { "✅ Позиция закрыта по сигналу: ${position.direction} ${position.instrumentName}, P&L: $pnl ₽" }
 
@@ -488,12 +492,22 @@ class TradingBotService(
         }
     }
 
-    private fun calculatePnl(position: OpenPosition, closePrice: BigDecimal): BigDecimal {
-        return if (position.direction == DomainOrderDirection.BUY) {
-            (closePrice - position.entryPrice) * BigDecimal.valueOf(position.quantity)
+    private fun calculatePnl(
+        position: OpenPosition,
+        closePrice: BigDecimal,
+        closeCommission: BigDecimal = BigDecimal.ZERO
+    ): BigDecimal {
+        val grossPnl = if (position.direction == DomainOrderDirection.BUY) {
+            (closePrice - position.entryPrice) *
+                    BigDecimal.valueOf(position.quantity) *
+                    BigDecimal.valueOf(position.lotSize.toLong())
         } else {
-            (position.entryPrice - closePrice) * BigDecimal.valueOf(position.quantity)
+            (position.entryPrice - closePrice) *
+                    BigDecimal.valueOf(position.quantity) *
+                    BigDecimal.valueOf(position.lotSize.toLong())
         }
+
+        return grossPnl - position.entryCommission - closeCommission
     }
 
     private fun tryMarkPositionClosing(position: OpenPosition, closeDirection: String): Boolean {
@@ -552,6 +566,28 @@ class TradingBotService(
         return fill
     }
 
+    private suspend fun waitForOpenFill(
+        marketData: MarketData,
+        orderResult: OrderResult
+    ): OrderFillResult? {
+        val orderId = orderResult.orderId
+        if (orderId.isNullOrBlank()) {
+            logger.warn { "No orderId for opening ${marketData.instrumentName}; keeping OPEN event as FAILED" }
+            return null
+        }
+
+        val fill = orderExecutionService.waitForOrderFill(accountId!!, orderId)
+        if (!fill.filled) {
+            logger.warn {
+                "Open order for ${marketData.instrumentName} is not filled: " +
+                        "orderId=$orderId, status=${fill.executionStatus}. Keeping OPEN event as FAILED."
+            }
+            return null
+        }
+
+        return fill
+    }
+
     private fun saveCloseEventOnce(data: MarketData, position: OpenPosition, pnl: BigDecimal, reason: String) {
         if (tradeEventRepository.existsByPositionIdAndEventType(position.positionId, EventType.CLOSE)) {
             logger.warn { "⏸️ CLOSE-событие уже существует, не пишем дубль: ${position.positionId}" }
@@ -577,6 +613,10 @@ class TradingBotService(
                     takePortfolioSnapshot()
                     delay(loopDelayMs)
                 } catch (e: Exception) {
+                    if (e is CancellationException) {
+                        logger.debug { "Scheduler stopped" }
+                        return@launch
+                    }
                     logger.error(e) { "Ошибка в планировщике" }
                     delay(10000)
                 }
@@ -746,6 +786,20 @@ class TradingBotService(
         )
 
         if (orderResult.success) {
+            val fill = waitForOpenFill(marketData, orderResult)
+            if (fill == null) {
+                savedEvent.status = EventStatus.FAILED
+                tradeEventRepository.save(savedEvent)
+                return
+            }
+
+            val entryPrice = fill.executedPrice ?: orderResult.executedPrice ?: marketData.currentPrice
+            val entryCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
+
+            savedEvent.price = entryPrice
+            savedEvent.totalValue = entryPrice *
+                    BigDecimal.valueOf(positionSize.quantity) *
+                    BigDecimal.valueOf(marketData.lotSize.toLong())
             savedEvent.status = EventStatus.PROCESSED
             savedEvent.processedAt = Instant.now()
             tradeEventRepository.save(savedEvent)
@@ -755,8 +809,10 @@ class TradingBotService(
                 instrumentId = marketData.instrumentId,
                 instrumentName = marketData.instrumentName,
                 direction = direction,
-                entryPrice = marketData.currentPrice,
+                entryPrice = entryPrice,
                 quantity = positionSize.quantity,
+                lotSize = marketData.lotSize,
+                entryCommission = entryCommission,
                 entryTime = Instant.now(),
                 stopLossPrice = positionSize.stopLossPrice,
                 atr = positionSize.atr
@@ -800,7 +856,9 @@ class TradingBotService(
             direction = position.direction,
             price = data.currentPrice,
             quantity = position.quantity,
-            totalValue = data.currentPrice * BigDecimal.valueOf(position.quantity),
+            totalValue = data.currentPrice *
+                    BigDecimal.valueOf(position.quantity) *
+                    BigDecimal.valueOf(position.lotSize.toLong()),
             reason = reason,
             pnl = pnl,
             eventType = EventType.CLOSE,
@@ -822,7 +880,9 @@ class TradingBotService(
             direction = position.direction,
             price = closePrice,
             quantity = position.quantity,
-            totalValue = closePrice * BigDecimal.valueOf(position.quantity),
+            totalValue = closePrice *
+                    BigDecimal.valueOf(position.quantity) *
+                    BigDecimal.valueOf(position.lotSize.toLong()),
             reason = reason,
             pnl = pnl,
             eventType = EventType.CLOSE,
@@ -881,6 +941,8 @@ class TradingBotService(
                 "direction" to position.direction.name,
                 "entryPrice" to position.entryPrice.toPlainString(),
                 "quantity" to position.quantity,
+                "lotSize" to position.lotSize,
+                "entryCommission" to position.entryCommission.toPlainString(),
                 "entryTime" to position.entryTime.toString()
             )
         }
@@ -959,7 +1021,8 @@ class TradingBotService(
                 if (orderResult.success) {
                     val fill = waitForCloseFill(position, orderResult) ?: return false
                     val closePrice = fill.executedPrice ?: orderResult.executedPrice ?: position.entryPrice
-                    val pnl = calculatePnl(position, closePrice)
+                    val closeCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
+                    val pnl = calculatePnl(position, closePrice, closeCommission)
                     logger.info { "✅ Закрыта позиция: ${position.instrumentName}, P&L: $pnl ₽" }
 
                     _openPositions.value = _openPositions.value - position.instrumentId
@@ -1082,6 +1145,8 @@ class TradingBotService(
                         direction = direction,
                         entryPrice = avgPrice,
                         quantity = absQuantity,
+                        lotSize = marketData?.lotSize ?: 1,
+                        entryCommission = BigDecimal.ZERO,
                         entryTime = entryTime,
                         stopLossPrice = stopLossPrice,
                         atr = atr
