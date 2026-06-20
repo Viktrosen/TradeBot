@@ -1,6 +1,7 @@
 package ru.bolotov.tradebot.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
@@ -69,6 +70,7 @@ class TradingBotService(
     private val sandboxService: SandboxService,
     private val instrumentsService: InstrumentsService,
     private val instrumentSelector: InstrumentSelector,
+    private val objectMapper: ObjectMapper,
     private val filterProperties: InstrumentFilterProperties,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
@@ -932,15 +934,34 @@ class TradingBotService(
         try {
             if (accountId != null) {
                 val portfolio = operationsService.getPortfolioSync(accountId!!)
+                val positions = operationsService.getPositionsSync(accountId!!)
                 val total = portfolio.totalAmountPortfolio?.value ?: BigDecimal.ZERO
-                val cash = portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
-                val positionsJson = portfolio.positions.joinToString(prefix = "[", postfix = "]") { pos ->
-                    val avgPrice = pos.averagePositionPrice?.value ?: BigDecimal.ZERO
-                    """{"instrumentId":"${pos.instrumentUid}","quantity":${pos.quantity},"averagePrice":$avgPrice}"""
-                }
+                val moneyRub = positions.money.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
+                val blockedRub = positions.blocked.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
+                val cash = moneyRub?.value ?: portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+                val blockedCash = blockedRub?.value ?: BigDecimal.ZERO
+                val availableCash = cash - blockedCash
+                val positionsJson = objectMapper.writeValueAsString(
+                    portfolio.positions.map { pos ->
+                        mapOf(
+                            "instrumentId" to pos.instrumentUid,
+                            "figi" to pos.figi,
+                            "instrumentType" to pos.instrumentType,
+                            "quantity" to pos.quantity,
+                            "averagePrice" to (pos.averagePositionPrice?.value ?: BigDecimal.ZERO),
+                            "currentPrice" to (pos.currentPrice?.value ?: BigDecimal.ZERO),
+                            "expectedYield" to pos.expectedYield,
+                            "blocked" to pos.isBlocked,
+                            "blockedLots" to pos.blockedLots
+                        )
+                    }
+                )
                 val snapshot = PortfolioSnapshot(
                     totalValue = total,
                     cashBalance = cash,
+                    blockedCash = blockedCash,
+                    availableCash = availableCash,
+                    currency = "rub",
                     positions = positionsJson
                 )
                 portfolioSnapshotRepository.save(snapshot)
