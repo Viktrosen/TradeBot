@@ -89,6 +89,8 @@ class TradingBotService(
 
     private val stopLossPercent = 0.02
     private val takeProfitPercent = 0.03
+    private val emergencyCloseChunkSize = 2
+    private val emergencyCloseChunkDelayMs = 1500L
 
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
     private val signalDebounceMs = 5000L
@@ -685,6 +687,27 @@ class TradingBotService(
         eventPublisherService.publishPortfolioChanged()
     }
 
+    private fun saveCloseEvent(position: OpenPosition, closePrice: BigDecimal, pnl: BigDecimal, reason: String) {
+        val closeEvent = TradeEvent(
+            instrumentId = position.instrumentId,
+            instrumentName = position.instrumentName,
+            direction = position.direction,
+            price = closePrice,
+            quantity = position.quantity,
+            totalValue = closePrice * BigDecimal.valueOf(position.quantity),
+            reason = reason,
+            pnl = pnl,
+            eventType = EventType.CLOSE,
+            positionId = position.positionId,
+            explanation = "Экстренное закрытие позиции рыночной заявкой, P&L: $pnl ₽",
+            status = EventStatus.PROCESSED,
+            processedAt = Instant.now()
+        )
+        tradeEventRepository.save(closeEvent)
+
+        eventPublisherService.publishPortfolioChanged()
+    }
+
     private suspend fun hasEnoughFunds(requiredAmount: BigDecimal): Boolean {
         return try {
             val portfolio = operationsService.getPortfolioSync(accountId!!)
@@ -747,8 +770,8 @@ class TradingBotService(
             val positions = _openPositions.value.values.toList()  // ← .values.toList()
             logger.info { "🚀 Начинаем закрытие ${positions.size} позиций" }
 
-            // Разбиваем на пачки и обрабатываем
-            positions.chunked(3).forEach { chunk ->
+            // У OrdersService нет batch-заявок, поэтому ограничиваем параллелизм и убираем лишний fetchMarketData.
+            positions.chunked(emergencyCloseChunkSize).forEach { chunk ->
                 coroutineScope {
                     val deferreds = chunk.map { position ->  // ← теперь position: OpenPosition
                         async(Dispatchers.IO) {
@@ -757,7 +780,7 @@ class TradingBotService(
                     }
                     deferreds.awaitAll()
                 }
-                delay(2000)
+                delay(emergencyCloseChunkDelayMs)
             }
 
             logger.info { "✅ Закрытие всех позиций завершено" }
@@ -790,38 +813,27 @@ class TradingBotService(
 
         for (attempt in 1..maxRetries) {
             try {
-                val marketData = marketDataProvider.fetchMarketData(position.instrumentId)
-
-                // 🆕 Проверка на валидность цены
-                if (marketData == null || marketData.currentPrice <= BigDecimal.ZERO) {
-                    logger.warn {
-                        "⚠️ Нет валидной цены для ${position.instrumentName} (${position.instrumentId}), " +
-                                "цена: ${marketData?.currentPrice ?: "null"}. Пропускаем закрытие."
-                    }
-                    return false
-                }
-
                 val closeDirection = if (position.direction == DomainOrderDirection.BUY) "SELL" else "BUY"
 
-                // 🆕 Логируем перед отправкой
                 logger.info {
-                    "💰 Закрытие ${position.instrumentName}: $closeDirection ${position.quantity} лотов по цене ${marketData.currentPrice}"
+                    "💰 Экстренное закрытие ${position.instrumentName}: " +
+                            "$closeDirection ${position.quantity} лотов рыночной заявкой"
                 }
 
-                val orderResult = orderExecutionService.placeOrder(
+                val orderResult = orderExecutionService.placeMarketOrder(
                     accountId = accountId!!,
                     instrumentId = position.instrumentId,
                     quantity = position.quantity,
-                    price = marketData.currentPrice,
                     direction = closeDirection
                 )
 
                 if (orderResult.success) {
-                    val pnl = calculatePnl(position, marketData.currentPrice)
+                    val closePrice = orderResult.executedPrice ?: position.entryPrice
+                    val pnl = calculatePnl(position, closePrice)
                     logger.info { "✅ Закрыта позиция: ${position.instrumentName}, P&L: $pnl ₽" }
 
                     _openPositions.value = _openPositions.value - position.instrumentId
-                    saveCloseEvent(marketData, position, pnl, "EMERGENCY_CLOSE")
+                    saveCloseEvent(position, closePrice, pnl, "EMERGENCY_CLOSE")
                     return true
                 } else {
                     lastError = Exception(orderResult.error)
