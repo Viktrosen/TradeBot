@@ -938,18 +938,24 @@ class TradingBotService(
                 val total = portfolio.totalAmountPortfolio?.value ?: BigDecimal.ZERO
                 val moneyRub = positions.money.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
                 val blockedRub = positions.blocked.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
-                val cash = moneyRub?.value ?: portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+                val availableCash = moneyRub?.value ?: BigDecimal.ZERO
                 val blockedCash = blockedRub?.value ?: BigDecimal.ZERO
-                val availableCash = cash - blockedCash
+                val cash = if (moneyRub != null || blockedRub != null) {
+                    availableCash + blockedCash
+                } else {
+                    portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+                }
                 val positionsJson = objectMapper.writeValueAsString(
                     portfolio.positions.map { pos ->
+                        val currentPrice = pos.currentPrice?.value ?: BigDecimal.ZERO
                         mapOf(
                             "instrumentId" to pos.instrumentUid,
                             "figi" to pos.figi,
                             "instrumentType" to pos.instrumentType,
                             "quantity" to pos.quantity,
                             "averagePrice" to (pos.averagePositionPrice?.value ?: BigDecimal.ZERO),
-                            "currentPrice" to (pos.currentPrice?.value ?: BigDecimal.ZERO),
+                            "currentPrice" to currentPrice,
+                            "positionValue" to (currentPrice * pos.quantity),
                             "expectedYield" to pos.expectedYield,
                             "blocked" to pos.isBlocked,
                             "blockedLots" to pos.blockedLots
