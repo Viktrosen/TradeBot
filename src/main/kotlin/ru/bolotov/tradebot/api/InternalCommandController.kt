@@ -89,11 +89,9 @@ class InternalCommandController(
         val timeframeName = request["timeframe"] as? String
         val minConfidence = (request["minConfidence"] as? Double) ?: candlestickPatternStrategy.minConfidence
 
-        // Настраиваем стратегию
-        if (timeframeName != null) {
+        val timeframe = if (timeframeName != null) {
             try {
-                val timeframe = CandlestickPatternStrategy.CandleTimeframe.valueOf(timeframeName.uppercase())
-                candlestickPatternStrategy.setTimeframe(timeframe)
+                CandlestickPatternStrategy.CandleTimeframe.valueOf(timeframeName.uppercase())
             } catch (e: IllegalArgumentException) {
                 return ResponseEntity.badRequest().body(
                     mapOf(
@@ -102,14 +100,12 @@ class InternalCommandController(
                     )
                 )
             }
+        } else {
+            candlestickPatternStrategy.currentTimeframe
         }
 
-        candlestickPatternStrategy.minConfidence = minConfidence
-
-        // Переключаем стратегию через StrategyManager
-        // Нужно добавить метод в StrategyManager для работы с CandlestickPatternStrategy
         tradingBotService.switchToCandlestickStrategy(
-            timeframe = candlestickPatternStrategy.currentTimeframe,
+            timeframe = timeframe,
             minConfidence = minConfidence
         )
 
@@ -117,7 +113,7 @@ class InternalCommandController(
             mapOf(
                 "success" to true,
                 "strategy" to "CandlestickPatterns",
-                "timeframe" to candlestickPatternStrategy.currentTimeframe.name,
+                "timeframe" to timeframe.name,
                 "minConfidence" to minConfidence
             )
         )

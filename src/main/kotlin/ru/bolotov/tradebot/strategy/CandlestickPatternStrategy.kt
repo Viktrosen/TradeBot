@@ -89,27 +89,36 @@ class CandlestickPatternStrategy(
     /**
      * Анализ с получением свечей (основной метод)
      */
-    suspend fun analyzeWithCandles(instrumentUid: String): Signal {
+    suspend fun analyzePatternWithCandles(instrumentUid: String): PatternResult {
         return try {
             val candles = fetchCandles(instrumentUid)
             if (candles.size < 3) {
-                return Signal.HOLD
+                return PatternResult(null, OrderDirection.HOLD, 0.0, "Недостаточно свечей")
             }
 
             val patternResult = detectPatterns(candles)
 
             if (patternResult.pattern != null && patternResult.confidence >= minConfidence) {
                 logger.info { "🔍 Обнаружен паттерн: ${patternResult.description} (confidence: ${patternResult.confidence})" }
-                Signal(
-                    direction = patternResult.direction,
-                    confidence = patternResult.confidence,
-                    reason = patternResult.description
-                )
+                patternResult
             } else {
-                Signal.HOLD
+                PatternResult(null, OrderDirection.HOLD, patternResult.confidence, patternResult.description)
             }
         } catch (e: Exception) {
             logger.error(e) { "Ошибка анализа свечных паттернов для $instrumentUid" }
+            PatternResult(null, OrderDirection.HOLD, 0.0, "Ошибка анализа свечных паттернов")
+        }
+    }
+
+    suspend fun analyzeWithCandles(instrumentUid: String): Signal {
+        val patternResult = analyzePatternWithCandles(instrumentUid)
+        return if (patternResult.pattern != null && patternResult.confidence >= minConfidence) {
+            Signal(
+                direction = patternResult.direction,
+                confidence = patternResult.confidence,
+                reason = patternResult.description
+            )
+        } else {
             Signal.HOLD
         }
     }

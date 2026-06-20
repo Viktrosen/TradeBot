@@ -59,7 +59,7 @@ class InstrumentSelector(
         logger.info { "========== НАЧАЛО ОТБОРА ИНСТРУМЕНТОВ ==========" }
         logger.info { "Параметры фильтрации: мин.объём=$minDailyVolume, волатильность=$minVolatility%..$maxVolatility%, макс.кол-во=$maxCount" }
 
-        val allShares = instrumentsService.getTradableSharesSync()
+        val allShares = instrumentsService.tradableSharesSync
         logger.info { "Получено ${allShares.size} доступных акций" }
 
         // Пакетная проверка статусов торговли

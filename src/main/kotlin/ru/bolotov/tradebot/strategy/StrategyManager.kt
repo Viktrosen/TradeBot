@@ -28,6 +28,9 @@ class StrategyManager(
 
     fun getCurrentStrategy(): TradingStrategy = currentStrategy
 
+    fun isCandlestickStrategyActive(): Boolean =
+        currentStrategy === candlestickPatternStrategy
+
     fun getAvailableStrategies(): List<Map<String, String>> {
         return listOf(
             mapOf(

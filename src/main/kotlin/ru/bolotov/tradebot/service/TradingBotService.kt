@@ -355,18 +355,16 @@ class TradingBotService(
         return try {
             val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
 
-            // 🆕 Добавь логирование
-            val patternSignal = candlestickPatternStrategy.analyzeWithCandles(lastPrice.instrumentUid)
-            logger.info { "🕯️ Candlestick анализ для ${lastPrice.instrumentUid}: ${patternSignal.direction}, уверенность=${patternSignal.confidence}" }
-
-            val patternResult = if (patternSignal.direction != OrderDirection.HOLD) {
-                CandlestickPatternStrategy.PatternResult(
-                    pattern = null,
-                    direction = patternSignal.direction,
-                    confidence = patternSignal.confidence,
-                    description = patternSignal.reason ?: ""
-                )
-            } else null
+            val patternResult = if (strategyManager.isCandlestickStrategyActive()) {
+                candlestickPatternStrategy.analyzePatternWithCandles(lastPrice.instrumentUid)
+                    .takeIf { it.pattern != null && it.confidence >= candlestickPatternStrategy.minConfidence }
+            } else {
+                null
+            }
+            logger.info {
+                "🕯️ Candlestick анализ для ${lastPrice.instrumentUid}: " +
+                        "pattern=${patternResult?.pattern}, direction=${patternResult?.direction}, confidence=${patternResult?.confidence}"
+            }
 
             marketData?.copy(candlestickPattern = patternResult)
         } catch (e: Exception) {
