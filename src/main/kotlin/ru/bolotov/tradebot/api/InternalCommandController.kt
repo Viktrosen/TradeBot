@@ -246,6 +246,21 @@ class InternalCommandController(
                 updates.add("maxPositions = $it")
             }
 
+            request.brokerLimitUsage?.let {
+                config.brokerLimitUsage = it
+                updates.add("brokerLimitUsage = ${"%.0f".format(it * 100)}%")
+            }
+
+            request.minOrderCashBuffer?.let {
+                config.minOrderCashBuffer = it
+                updates.add("minOrderCashBuffer = $it")
+            }
+
+            request.allowMinPositionSizeUpscale?.let {
+                config.allowMinPositionSizeUpscale = it
+                updates.add("allowMinPositionSizeUpscale = $it")
+            }
+
             // Принудительно сохраняем в БД после массового обновления
             config.persist()
 
@@ -274,6 +289,9 @@ class InternalCommandController(
         config.maxPositionSize = 100_000L
         config.minPositionSize = 5_000L
         config.maxPositions = 10
+        config.brokerLimitUsage = 0.95
+        config.minOrderCashBuffer = 100L
+        config.allowMinPositionSizeUpscale = false
 
         config.persist()
 
@@ -300,5 +318,8 @@ data class RiskConfigRequest(
     val maxCapitalUsage: Double? = null,
     val maxPositionSize: Long? = null,
     val minPositionSize: Long? = null,
-    val maxPositions: Int? = null
+    val maxPositions: Int? = null,
+    val brokerLimitUsage: Double? = null,
+    val minOrderCashBuffer: Long? = null,
+    val allowMinPositionSizeUpscale: Boolean? = null
 )

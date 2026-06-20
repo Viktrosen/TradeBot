@@ -132,6 +132,31 @@ class OrderExecutionService(
         }
     }
 
+    fun getBrokerLotLimits(
+        accountId: String,
+        instrumentId: String,
+        price: BigDecimal
+    ): BrokerLotLimits? {
+        return try {
+            val response = ordersService.getMaxLotsSync(
+                accountId,
+                instrumentId,
+                quotationFromBigDecimal(price)
+            )
+            val buyLimits = response.buyLimits
+
+            BrokerLotLimits(
+                currency = response.currency,
+                maxBuyLots = buyLimits.buyMaxLots,
+                maxMarketBuyLots = buyLimits.buyMaxMarketLots,
+                availableBuyMoney = quotationToBigDecimal(buyLimits.buyMoneyAmount)
+            )
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to get broker lot limits for $instrumentId" }
+            null
+        }
+    }
+
     fun findActiveOrder(
         accountId: String,
         instrumentId: String,
@@ -215,6 +240,12 @@ class OrderExecutionService(
             .takeIf { it > BigDecimal.ZERO }
     }
 
+    private fun quotationToBigDecimal(value: Quotation?): BigDecimal {
+        if (value == null) return BigDecimal.ZERO
+        return BigDecimal.valueOf(value.units)
+            .add(BigDecimal.valueOf(value.nano.toLong(), 9))
+    }
+
     companion object {
         private val activeOrderStatuses = setOf(
             OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_NEW,
@@ -244,6 +275,13 @@ data class OrderResult(
 data class ActiveOrderInfo(
     val orderId: String,
     val executionStatus: String
+)
+
+data class BrokerLotLimits(
+    val currency: String,
+    val maxBuyLots: Long,
+    val maxMarketBuyLots: Long,
+    val availableBuyMoney: BigDecimal
 )
 
 data class OrderFillResult(

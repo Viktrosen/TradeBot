@@ -699,11 +699,32 @@ class TradingBotService(
                     return
                 }
 
-                val positionSize = positionSizingService.calculatePositionSize(
+                val calculatedPositionSize = positionSizingService.calculatePositionSize(
                     marketData = marketData,
                     availableCapital = availableCapital,
                     currentPositions = _openPositions.value
                 )
+
+                val brokerLimits = orderExecutionService.getBrokerLotLimits(
+                    accountId = accountId!!,
+                    instrumentId = marketData.instrumentId,
+                    price = marketData.currentPrice
+                ) ?: run {
+                    logger.warn { "Broker limits are unavailable for ${marketData.instrumentName}; skip opening" }
+                    return
+                }
+
+                val positionSize = positionSizingService.applyBrokerLimits(
+                    positionSize = calculatedPositionSize,
+                    marketData = marketData,
+                    availableCapital = availableCapital,
+                    brokerLimits = brokerLimits
+                )
+
+                if (positionSize.quantity <= 0) {
+                    logger.warn { "Broker/user risk limits do not allow opening ${marketData.instrumentName}" }
+                    return
+                }
 
                 val estimatedOrderAmount = orderExecutionService.estimateOrderAmount(
                     accountId = accountId!!,

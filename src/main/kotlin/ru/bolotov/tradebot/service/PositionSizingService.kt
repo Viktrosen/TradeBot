@@ -5,7 +5,6 @@ import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.strategy.MarketData
 import java.math.BigDecimal
-import kotlin.math.min
 
 private val logger = KotlinLogging.logger {}
 
@@ -28,11 +27,12 @@ class PositionSizingService(
 
         val riskPerTrade = config.riskPerTrade.toBigDecimal()
         val riskAmount = availableCapital * riskPerTrade
-        val riskBasedQuantity = (riskAmount / stopDistance).toLong()
+        val riskPerLot = stopDistance * lotSize
+        val riskBasedQuantity = (riskAmount / riskPerLot).toLong()
 
         val maxPositions = config.maxPositions
         val usedCapital = currentPositions.values.sumOf {
-            (it.entryPrice * BigDecimal.valueOf(it.quantity)).toDouble()
+            (it.entryPrice * BigDecimal.valueOf(it.quantity) * BigDecimal.valueOf(it.lotSize.toLong())).toDouble()
         }.toBigDecimal()
         val freeCapital = availableCapital - usedCapital
         val targetCapitalPerPosition = freeCapital / (maxPositions - currentPositions.size).coerceAtLeast(1).toBigDecimal()
@@ -43,7 +43,11 @@ class PositionSizingService(
             .coerceAtMost((config.maxPositionSize.toBigDecimal() / lotPrice).toLong())
 
         val positionValue = lotPrice * BigDecimal.valueOf(rawQuantity)
-        val finalQuantity = if (positionValue < config.minPositionSize.toBigDecimal() && availableCapital > config.minPositionSize.toBigDecimal()) {
+        val finalQuantity = if (
+            config.allowMinPositionSizeUpscale &&
+            positionValue < config.minPositionSize.toBigDecimal() &&
+            availableCapital > config.minPositionSize.toBigDecimal()
+        ) {
             (config.minPositionSize.toBigDecimal() / lotPrice).toLong().coerceAtLeast(1L)
         } else {
             rawQuantity
@@ -67,12 +71,45 @@ class PositionSizingService(
         )
     }
 
+    fun applyBrokerLimits(
+        positionSize: PositionSize,
+        marketData: MarketData,
+        availableCapital: BigDecimal,
+        brokerLimits: BrokerLotLimits?
+    ): PositionSize {
+        if (brokerLimits == null) return positionSize
+
+        val lotPrice = marketData.currentPrice * marketData.lotSize.toBigDecimal()
+        val safeBrokerLots = (brokerLimits.maxBuyLots.toBigDecimal() * config.brokerLimitUsage.toBigDecimal()).toLong()
+        val cashLimitedLots = ((brokerLimits.availableBuyMoney - config.minOrderCashBuffer.toBigDecimal())
+            .coerceAtLeast(BigDecimal.ZERO) / lotPrice).toLong()
+        val finalQuantity = minOf(positionSize.quantity, safeBrokerLots, cashLimitedLots).coerceAtLeast(0L)
+        val finalValue = lotPrice * finalQuantity.toBigDecimal()
+
+        if (finalQuantity < positionSize.quantity) {
+            logger.info {
+                "Broker limits reduced ${marketData.instrumentName}: " +
+                        "${positionSize.quantity} -> $finalQuantity lots, available=${brokerLimits.availableBuyMoney}"
+            }
+        }
+
+        return positionSize.copy(
+            quantity = finalQuantity,
+            value = finalValue,
+            capitalUsagePercent = if (availableCapital > BigDecimal.ZERO) {
+                (finalValue / availableCapital * BigDecimal(100)).toDouble()
+            } else {
+                0.0
+            }
+        )
+    }
+
     fun canOpenNewPosition(
         availableCapital: BigDecimal,
         currentPositions: Map<String, OpenPosition>
     ): Boolean {
         val usedCapital = currentPositions.values.sumOf {
-            (it.entryPrice * BigDecimal.valueOf(it.quantity)).toDouble()
+            (it.entryPrice * BigDecimal.valueOf(it.quantity) * BigDecimal.valueOf(it.lotSize.toLong())).toDouble()
         }.toBigDecimal()
 
         val capitalUsage = usedCapital / availableCapital

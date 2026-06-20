@@ -24,6 +24,15 @@ class RiskConfigEntity(
     @Column(name = "max_positions")
     var maxPositions: Int = 10,
 
+    @Column(name = "broker_limit_usage")
+    var brokerLimitUsage: Double = 0.95,
+
+    @Column(name = "min_order_cash_buffer")
+    var minOrderCashBuffer: Long = 100L,
+
+    @Column(name = "allow_min_position_size_upscale")
+    var allowMinPositionSizeUpscale: Boolean = false,
+
     @Column(name = "updated_at")
     var updatedAt: Instant = Instant.now()
 )

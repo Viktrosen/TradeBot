@@ -37,7 +37,10 @@ class RiskConfigPersistenceService(
         maxCapitalUsage: Double,
         maxPositionSize: Long,
         minPositionSize: Long,
-        maxPositions: Int
+        maxPositions: Int,
+        brokerLimitUsage: Double,
+        minOrderCashBuffer: Long,
+        allowMinPositionSizeUpscale: Boolean
     ) {
         val entity = RiskConfigEntity(
             id = "current",
@@ -46,6 +49,9 @@ class RiskConfigPersistenceService(
             maxPositionSize = maxPositionSize,
             minPositionSize = minPositionSize,
             maxPositions = maxPositions,
+            brokerLimitUsage = brokerLimitUsage,
+            minOrderCashBuffer = minOrderCashBuffer,
+            allowMinPositionSizeUpscale = allowMinPositionSizeUpscale,
             updatedAt = Instant.now()
         )
         repository.save(entity)
@@ -58,7 +64,10 @@ class RiskConfigPersistenceService(
             maxCapitalUsage = 0.80,
             maxPositionSize = 100_000L,
             minPositionSize = 5_000L,
-            maxPositions = 10
+            maxPositions = 10,
+            brokerLimitUsage = 0.95,
+            minOrderCashBuffer = 100L,
+            allowMinPositionSizeUpscale = false
         )
     }
 }

@@ -15,6 +15,9 @@ class PositionSizingConfig(
     private val _maxPositionSize = AtomicReference(100_000L)
     private val _minPositionSize = AtomicReference(5_000L)
     private val _maxPositions = AtomicReference(10)
+    private val _brokerLimitUsage = AtomicReference(0.95)
+    private val _minOrderCashBuffer = AtomicReference(100L)
+    private val _allowMinPositionSizeUpscale = AtomicReference(false)
 
     var riskPerTrade: Double
         get() = _riskPerTrade.get()
@@ -52,6 +55,26 @@ class PositionSizingConfig(
             _maxPositions.set(value)
         }
 
+    var brokerLimitUsage: Double
+        get() = _brokerLimitUsage.get()
+        set(value) {
+            require(value in 0.10..1.00) { "Broker limit usage must be between 10% and 100%" }
+            _brokerLimitUsage.set(value)
+        }
+
+    var minOrderCashBuffer: Long
+        get() = _minOrderCashBuffer.get()
+        set(value) {
+            require(value in 0..100_000) { "Cash buffer must be between 0 and 100 000" }
+            _minOrderCashBuffer.set(value)
+        }
+
+    var allowMinPositionSizeUpscale: Boolean
+        get() = _allowMinPositionSizeUpscale.get()
+        set(value) {
+            _allowMinPositionSizeUpscale.set(value)
+        }
+
     @PostConstruct
     fun init() {
         val saved = persistenceService.loadConfig()
@@ -61,6 +84,9 @@ class PositionSizingConfig(
             _maxPositionSize.set(saved.maxPositionSize)
             _minPositionSize.set(saved.minPositionSize)
             _maxPositions.set(saved.maxPositions)
+            _brokerLimitUsage.set(saved.brokerLimitUsage)
+            _minOrderCashBuffer.set(saved.minOrderCashBuffer)
+            _allowMinPositionSizeUpscale.set(saved.allowMinPositionSizeUpscale)
         }
     }
 
@@ -70,7 +96,10 @@ class PositionSizingConfig(
             maxCapitalUsage = maxCapitalUsage,
             maxPositionSize = maxPositionSize,
             minPositionSize = minPositionSize,
-            maxPositions = maxPositions
+            maxPositions = maxPositions,
+            brokerLimitUsage = brokerLimitUsage,
+            minOrderCashBuffer = minOrderCashBuffer,
+            allowMinPositionSizeUpscale = allowMinPositionSizeUpscale
         )
     }
 
@@ -81,6 +110,10 @@ class PositionSizingConfig(
         "maxCapitalUsagePercent" to "${"%.0f".format(maxCapitalUsage * 100)}%",
         "maxPositionSize" to maxPositionSize,
         "minPositionSize" to minPositionSize,
-        "maxPositions" to maxPositions
+        "maxPositions" to maxPositions,
+        "brokerLimitUsage" to brokerLimitUsage,
+        "brokerLimitUsagePercent" to "${"%.0f".format(brokerLimitUsage * 100)}%",
+        "minOrderCashBuffer" to minOrderCashBuffer,
+        "allowMinPositionSizeUpscale" to allowMinPositionSizeUpscale
     )
 }
