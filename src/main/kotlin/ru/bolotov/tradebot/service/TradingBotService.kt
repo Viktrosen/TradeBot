@@ -95,6 +95,17 @@ class TradingBotService(
     private var isPortfolioRestored = false
     private var isClosingPositions = false
 
+    private val ignoredBrokerPositionInstrumentTypes = setOf("currency")
+    private val ignoredBrokerPositionUids = setOf(
+        "a92e2e25-a698-45cc-a781-167cf465257c" // RUB
+    )
+
+    private data class RestorableInstrumentInfo(
+        val ticker: String,
+        val name: String,
+        val instrumentType: String
+    )
+
     init {
         runBlocking {
             initializeAccount()
@@ -859,18 +870,16 @@ class TradingBotService(
             }
 
             val restoredPositions = mutableMapOf<String, OpenPosition>()
+            var skippedNonTradablePositions = 0
 
             for (pos in brokerPositions) {
                 try {
                     val instrumentUid = pos.instrumentUid
 
-                    // Получаем информацию об инструменте
-                    val instrumentInfo = try {
-                        val share = instrumentsService.getShareByUidSync(instrumentUid)
-                        share.ticker to share.name
-                    } catch (e: Exception) {
-                        logger.warn(e) { "Не удалось получить информацию для $instrumentUid" }
-                        instrumentUid to instrumentUid
+                    val instrumentInfo = getRestorableInstrumentInfo(instrumentUid)
+                    if (instrumentInfo == null) {
+                        skippedNonTradablePositions++
+                        continue
                     }
 
                     // 🔧 Money → BigDecimal (у Money есть методы getValue() и getCurrency())
@@ -919,7 +928,7 @@ class TradingBotService(
                     val restoredPosition = OpenPosition(
                         positionId = positionId,
                         instrumentId = instrumentUid,
-                        instrumentName = instrumentInfo.second,
+                        instrumentName = instrumentInfo.name,
                         direction = direction,
                         entryPrice = avgPrice,
                         quantity = absQuantity,
@@ -951,10 +960,57 @@ class TradingBotService(
             }
 
             isPortfolioRestored = true
-            logger.info { "✅ Синхронизация завершена. Восстановлено ${restoredPositions.size} позиций" }
+            logger.info {
+                "✅ Синхронизация завершена. Восстановлено ${restoredPositions.size} позиций, " +
+                        "пропущено неторговых/нераспознанных: $skippedNonTradablePositions"
+            }
 
         } catch (e: Exception) {
             logger.error(e) { "❌ Критическая ошибка при синхронизации портфеля" }
+        }
+    }
+
+    private fun getRestorableInstrumentInfo(instrumentUid: String): RestorableInstrumentInfo? {
+        if (instrumentUid in ignoredBrokerPositionUids) {
+            logger.info { "💱 Пропускаем валютную позицию при восстановлении: $instrumentUid" }
+            return null
+        }
+
+        return try {
+            val instrument = instrumentsService.getInstrumentByUIDSync(instrumentUid).instrument
+            val instrumentType = instrument.instrumentType.lowercase()
+
+            if (instrumentType in ignoredBrokerPositionInstrumentTypes) {
+                logger.info {
+                    "💱 Пропускаем валютную позицию при восстановлении: " +
+                            "${instrument.ticker.ifBlank { instrumentUid }} ($instrumentUid)"
+                }
+                null
+            } else {
+                RestorableInstrumentInfo(
+                    ticker = instrument.ticker,
+                    name = instrument.name.ifBlank { instrument.ticker.ifBlank { instrumentUid } },
+                    instrumentType = instrumentType
+                )
+            }
+        } catch (instrumentError: Exception) {
+            logger.warn(instrumentError) {
+                "⚠️ Не удалось распознать инструмент $instrumentUid через getInstrumentByUIDSync, пробуем как акцию"
+            }
+
+            try {
+                val share = instrumentsService.getShareByUidSync(instrumentUid)
+                RestorableInstrumentInfo(
+                    ticker = share.ticker,
+                    name = share.name.ifBlank { share.ticker.ifBlank { instrumentUid } },
+                    instrumentType = "share"
+                )
+            } catch (shareError: Exception) {
+                logger.warn(shareError) {
+                    "⚠️ Пропускаем нераспознанную брокерскую позицию $instrumentUid: нет данных об инструменте"
+                }
+                null
+            }
         }
     }
 
