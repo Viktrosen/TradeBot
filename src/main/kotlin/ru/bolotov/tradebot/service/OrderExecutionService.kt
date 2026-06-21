@@ -183,8 +183,11 @@ class OrderExecutionService(
         maxAttempts: Int = 10,
         delayMs: Long = 1000L
     ): OrderFillResult {
+        var lastState: Any? = null
+
         repeat(maxAttempts) { attempt ->
             val state = ordersService.getOrderStateSync(accountId, orderId)
+            lastState = state
             val status = state.executionReportStatus
 
             if (status == OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL) {
@@ -196,7 +199,8 @@ class OrderExecutionService(
                     executedCommission = moneyValueToBigDecimal(state.executedCommission),
                     lotsRequested = state.lotsRequested,
                     lotsExecuted = state.lotsExecuted,
-                    executionStatus = status.name
+                    executionStatus = status.name,
+                    brokerOrderState = state.toString()
                 )
             }
 
@@ -205,7 +209,9 @@ class OrderExecutionService(
                     filled = false,
                     lotsRequested = state.lotsRequested,
                     lotsExecuted = state.lotsExecuted,
-                    executionStatus = status.name
+                    executionStatus = status.name,
+                    errorMessage = "Order finished without fill: ${status.name}",
+                    brokerOrderState = state.toString()
                 )
             }
 
@@ -216,7 +222,9 @@ class OrderExecutionService(
 
         return OrderFillResult(
             filled = false,
-            executionStatus = "TIMEOUT_WAITING_FILL"
+            executionStatus = "TIMEOUT_WAITING_FILL",
+            errorMessage = "Order was not filled after $maxAttempts attempts",
+            brokerOrderState = lastState?.toString()
         )
     }
 
@@ -292,5 +300,7 @@ data class OrderFillResult(
     val executedCommission: BigDecimal? = null,
     val lotsRequested: Long? = null,
     val lotsExecuted: Long? = null,
-    val executionStatus: String? = null
+    val executionStatus: String? = null,
+    val errorMessage: String? = null,
+    val brokerOrderState: String? = null
 )

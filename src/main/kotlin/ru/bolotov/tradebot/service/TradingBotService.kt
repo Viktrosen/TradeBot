@@ -627,7 +627,7 @@ class TradingBotService(
                 "Open order for ${marketData.instrumentName} is not filled: " +
                         "orderId=$orderId, status=${fill.executionStatus}. Keeping OPEN event as FAILED."
             }
-            return null
+            return fill
         }
 
         return fill
@@ -853,8 +853,15 @@ class TradingBotService(
 
         if (orderResult.success) {
             val fill = waitForOpenFill(marketData, orderResult)
-            if (fill == null) {
+            savedEvent.brokerOrderId = orderResult.orderId
+            savedEvent.executionStatus = fill?.executionStatus ?: orderResult.executionStatus
+            savedEvent.brokerOrderState = fill?.brokerOrderState
+            if (fill == null || !fill.filled) {
                 savedEvent.status = EventStatus.FAILED
+                savedEvent.executionStatus = fill?.executionStatus ?: orderResult.executionStatus
+                savedEvent.processedAt = Instant.now()
+                savedEvent.errorMessage = fill?.errorMessage
+                    ?: "Open order was not filled before timeout or terminal rejection"
                 tradeEventRepository.save(savedEvent)
                 return
             }
@@ -868,6 +875,8 @@ class TradingBotService(
                     BigDecimal.valueOf(marketData.lotSize.toLong())
             savedEvent.status = EventStatus.PROCESSED
             savedEvent.processedAt = Instant.now()
+            savedEvent.errorMessage = null
+            savedEvent.brokerOrderState = fill.brokerOrderState
             tradeEventRepository.save(savedEvent)
 
             val newPosition = OpenPosition(
@@ -899,6 +908,10 @@ class TradingBotService(
             eventPublisherService.publishPortfolioChanged()
         } else {
             savedEvent.status = EventStatus.FAILED
+            savedEvent.brokerOrderId = orderResult.orderId
+            savedEvent.executionStatus = orderResult.executionStatus
+            savedEvent.errorMessage = orderResult.error
+            savedEvent.processedAt = Instant.now()
             tradeEventRepository.save(savedEvent)
             logger.error { "Ошибка открытия позиции: ${orderResult.error}" }
         }

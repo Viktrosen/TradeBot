@@ -51,7 +51,19 @@ data class TradeEvent(
     var eventType: EventType? = null,
 
     @Column(name = "position_id")
-    var positionId: String? = null
+    var positionId: String? = null,
+
+    @Column(name = "broker_order_id")
+    var brokerOrderId: String? = null,
+
+    @Column(name = "execution_status")
+    var executionStatus: String? = null,
+
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    var errorMessage: String? = null,
+
+    @Column(name = "broker_order_state", columnDefinition = "TEXT")
+    var brokerOrderState: String? = null
 )
 
 enum class OrderDirection {
