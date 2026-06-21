@@ -34,6 +34,7 @@ import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Consumer
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
 
@@ -72,6 +73,7 @@ class TradingBotService(
     private val instrumentSelector: InstrumentSelector,
     private val objectMapper: ObjectMapper,
     private val filterProperties: InstrumentFilterProperties,
+    private val instrumentFilterConfigPersistenceService: InstrumentFilterConfigPersistenceService,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
@@ -101,6 +103,7 @@ class TradingBotService(
     private val signalDebounceMs = 5000L
     private var isPortfolioRestored = false
     private var isClosingPositions = false
+    private val isRescanningInstruments = AtomicBoolean(false)
 
     private val ignoredBrokerPositionInstrumentTypes = setOf("currency")
     private val ignoredBrokerPositionUids = setOf(
@@ -116,10 +119,19 @@ class TradingBotService(
     init {
         runBlocking {
             initializeAccount()
+            loadInstrumentFilterConfiguration()
             selectInitialInstruments()
             loadLastStrategyConfiguration()
             restorePositionsFromBroker()
         }
+    }
+
+    private fun loadInstrumentFilterConfiguration() {
+        val config = instrumentFilterConfigPersistenceService.loadConfig()
+        filterProperties.minDailyVolume = config.minDailyVolume
+        filterProperties.minVolatility = config.minVolatility
+        filterProperties.maxVolatility = config.maxVolatility
+        filterProperties.maxCount = config.maxCount
     }
 
     private suspend fun loadLastStrategyConfiguration() {
@@ -170,7 +182,7 @@ class TradingBotService(
     private suspend fun initializeAccount() {
         try {
             if (sandboxEnabled) {
-                val existingAccounts = sandboxService.getAccountsSync()
+                val existingAccounts = sandboxService.accountsSync
                 if (existingAccounts.isNotEmpty()) {
                     accountId = existingAccounts.firstOrNull()?.id
                     logger.info { "Используем существующий Sandbox-счёт: $accountId" }
@@ -252,7 +264,9 @@ class TradingBotService(
     }
 
     private fun applySelectedInstruments(selectedInstruments: List<SelectedInstrument>) {
-        _activeInstruments.value = selectedInstruments.map { it.uid }
+        val selectedInstrumentIds = selectedInstruments.map { it.uid }
+        val openPositionInstrumentIds = _openPositions.value.keys
+        _activeInstruments.value = (selectedInstrumentIds + openPositionInstrumentIds).distinct()
         logger.info { "Selected ${_activeInstruments.value.size} instruments for trading" }
         selectedInstruments.forEach { instrument ->
             logger.info { "  - ${instrument.ticker} (${instrument.instrumentType}): price=${instrument.price}" }
@@ -260,15 +274,24 @@ class TradingBotService(
     }
 
     suspend fun rescanInstruments(): List<String> {
-        val selectedInstruments = selectInstrumentsByCurrentFilters()
-        applySelectedInstruments(selectedInstruments)
-
-        if (_isRunning.value) {
-            priceStreamJob?.cancel()
-            startPriceStream()
+        if (!isRescanningInstruments.compareAndSet(false, true)) {
+            logger.warn { "Рескан инструментов уже выполняется, новый запуск пропущен" }
+            return _activeInstruments.value
         }
 
-        return _activeInstruments.value
+        try {
+            val selectedInstruments = selectInstrumentsByCurrentFilters()
+            applySelectedInstruments(selectedInstruments)
+
+            if (_isRunning.value) {
+                priceStreamJob?.cancel()
+                startPriceStream()
+            }
+
+            return _activeInstruments.value
+        } finally {
+            isRescanningInstruments.set(false)
+        }
     }
 
 
@@ -1313,20 +1336,17 @@ class TradingBotService(
         filterProperties.minVolatility = minVolatility
         filterProperties.maxVolatility = maxVolatility
         filterProperties.maxCount = maxCount
+        instrumentFilterConfigPersistenceService.saveConfig(
+            minDailyVolume = minDailyVolume,
+            minVolatility = minVolatility,
+            maxVolatility = maxVolatility,
+            maxCount = maxCount
+        )
 
-        scope.launch {
-            val selected = instrumentSelector.selectTradableInstruments(
-                minDailyVolume = minDailyVolume,
-                minVolatility = minVolatility,
-                maxVolatility = maxVolatility,
-                maxCount = maxCount
-            )
-            _activeInstruments.value = selected.map { it.uid }
-
-            if (_isRunning.value) {
-                priceStreamJob?.cancel()
-                startPriceStream()
-            }
+        logger.info {
+            "Фильтры инструментов обновлены: minDailyVolume=$minDailyVolume, " +
+                    "volatility=$minVolatility%..$maxVolatility%, maxCount=$maxCount. " +
+                    "Для применения вызовите /internal/command/instruments/rescan"
         }
     }
 
