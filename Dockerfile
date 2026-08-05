@@ -12,6 +12,10 @@ RUN java -Djarmode=layertools -jar app.jar extract
 
 FROM bellsoft/liberica-openjre-debian:17
 VOLUME /tmp
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ca-certificates-java \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd -ms /bin/bash spring-user
 USER spring-user
 WORKDIR /application
@@ -20,4 +24,4 @@ COPY --from=layers /application/spring-boot-loader/ ./
 COPY --from=layers /application/snapshot-dependencies/ ./
 COPY --from=layers /application/application/ ./
 
-ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["java", "-Dio.netty.handler.ssl.noOpenSsl=true", "org.springframework.boot.loader.launch.JarLauncher"]

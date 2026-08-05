@@ -16,27 +16,38 @@ class EventPublisherService(
 
     fun publishTradeExecuted(trade: TradeEvent) {
         try {
-            val message = objectMapper.writeValueAsString(trade)
-            if (rabbitTemplate == null) {
-                logger.debug { "RabbitMQ отключен, событие не отправлено" }
-                return
-            }
-            logger.debug { "Опубликовано trade.executed" }
+            val message = objectMapper.writeValueAsString(
+                mapOf(
+                    "eventType" to "TRADE_EXECUTED",
+                    "data" to trade
+                )
+            )
+            rabbitTemplate.convertAndSend("trade.events", "trade.executed", message)
+            logger.debug { "Опубликовано событие trade.executed" }
         } catch (e: Exception) {
-            logger.error(e) { "Ошибка публикации trade.executed" }
+            logger.error(e) { "Ошибка публикации события trade.executed" }
         }
     }
 
     fun publishPortfolioChanged() {
-        if (rabbitTemplate == null) return
-        rabbitTemplate.convertAndSend("trade.events", "portfolio.changed", "{}")
-        logger.debug { "Опубликовано portfolio.changed" }
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "PORTFOLIO_CHANGED",
+                "data" to emptyMap<String, Any>()
+            )
+        )
+        rabbitTemplate.convertAndSend("trade.events", "portfolio.changed", message)
+        logger.debug { "Опубликовано событие portfolio.changed" }
     }
 
     fun publishBotStatusChanged(status: String) {
-        if (rabbitTemplate == null) return
-        val message = "{\"status\":\"$status\"}"
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "BOT_STATUS_CHANGED",
+                "data" to mapOf("status" to status)
+            )
+        )
         rabbitTemplate.convertAndSend("trade.events", "bot.status.changed", message)
-        logger.info { "Опубликовано bot.status.changed: $status" }
+        logger.info { "Опубликовано событие bot.status.changed: $status" }
     }
 }
