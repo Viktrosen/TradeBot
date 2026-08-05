@@ -250,8 +250,13 @@ class TradingBotService(
     }
 
     private suspend fun selectInitialInstruments() {
-        val selectedInstruments = selectInstrumentsByCurrentFilters()
-        applySelectedInstruments(selectedInstruments)
+        try {
+            val selectedInstruments = selectInstrumentsByCurrentFilters()
+            applySelectedInstruments(selectedInstruments)
+        } catch (e: Exception) {
+            logger.error(e) { "Не удалось выполнить первичный отбор инструментов через Tinkoff API. Приложение продолжит запуск без активных инструментов." }
+            _activeInstruments.value = emptyList()
+        }
     }
 
     private suspend fun selectInstrumentsByCurrentFilters(): List<SelectedInstrument> {

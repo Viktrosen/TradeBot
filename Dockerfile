@@ -16,6 +16,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ca-certificates-java \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+ENV JAVA_TOOL_OPTIONS="-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true -Dio.netty.handler.ssl.noOpenSsl=true"
 RUN useradd -ms /bin/bash spring-user
 USER spring-user
 WORKDIR /application
@@ -24,4 +25,4 @@ COPY --from=layers /application/spring-boot-loader/ ./
 COPY --from=layers /application/snapshot-dependencies/ ./
 COPY --from=layers /application/application/ ./
 
-ENTRYPOINT ["java", "-Dio.netty.handler.ssl.noOpenSsl=true", "org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
