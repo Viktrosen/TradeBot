@@ -73,7 +73,11 @@ class InternalCommandController(
 
     @PostMapping("/strategy/voting")
     fun switchToVotingStrategy(@RequestBody request: Map<String, Int>): ResponseEntity<Map<String, Any>> {
-        tradingBotService.switchToVotingStrategy(request)
+        try {
+            tradingBotService.switchToVotingStrategy(request)
+        } catch (e: IllegalArgumentException) {
+            return ResponseEntity.badRequest().body(mapOf("status" to "error", "error" to (e.message ?: "Некорректная конфигурация")))
+        }
         return ResponseEntity.ok(
             mapOf(
                 "status" to "switched",
@@ -88,6 +92,12 @@ class InternalCommandController(
         // Получаем параметры из запроса (опционально)
         val timeframeName = request["timeframe"] as? String
         val minConfidence = (request["minConfidence"] as? Double) ?: candlestickPatternStrategy.minConfidence
+
+        if (minConfidence !in 0.75..1.0) {
+            return ResponseEntity.badRequest().body(
+                mapOf("success" to false, "error" to "Минимальная уверенность свечной стратегии должна быть от 0.75 до 1")
+            )
+        }
 
         val timeframe = if (timeframeName != null) {
             try {
@@ -122,7 +132,11 @@ class InternalCommandController(
     @PostMapping("/strategy/confirmation")
     fun switchToConfirmationStrategy(@RequestBody request: Map<String, List<String>>): ResponseEntity<Map<String, Any>> {
         val indicators = request["indicators"] ?: listOf("EMA", "RSI")
-        tradingBotService.switchToConfirmationStrategy(indicators)
+        try {
+            tradingBotService.switchToConfirmationStrategy(indicators)
+        } catch (e: IllegalArgumentException) {
+            return ResponseEntity.badRequest().body(mapOf("status" to "error", "error" to (e.message ?: "Некорректная конфигурация")))
+        }
         return ResponseEntity.ok(
             mapOf(
                 "status" to "switched",

@@ -18,10 +18,24 @@ class VotingStrategy(
 
     private var weights: Map<String, Int> = mapOf("EMA" to 3, "RSI" to 2, "MACD" to 2, "BB" to 2)
 
+    private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB")
+
     override fun configure(config: StrategyConfiguration) {
         when (config) {
             is StrategyConfiguration.Voting -> {
-                weights = config.weights
+                val normalizedWeights = config.weights.mapKeys { (indicator, _) -> indicator.uppercase() }
+                require(normalizedWeights.keys.all { it in supportedIndicators }) {
+                    "Неизвестные индикаторы в стратегии голосования: " +
+                        normalizedWeights.keys.filterNot { it in supportedIndicators }.joinToString(", ")
+                }
+                require(normalizedWeights.size >= 2) {
+                    "Для стратегии голосования необходимо не менее двух индикаторов"
+                }
+                require(normalizedWeights.values.all { it in 1..10 }) {
+                    "Вес каждого индикатора должен быть от 1 до 10"
+                }
+
+                weights = normalizedWeights
                 name = "Voting (веса: $weights)"
                 description = "Комбинированная стратегия с голосованием. Веса индикаторов: $weights"
                 logger.info { "🔧 VotingStrategy настроена: $weights" }
@@ -34,6 +48,7 @@ class VotingStrategy(
         var buyScore = 0
         var sellScore = 0
         val explanations = mutableListOf<String>()
+        val configuredWeight = weights.values.sum()
 
         // EMA
         val emaSignal = crossEmaStrategy.analyze(data)
@@ -82,12 +97,12 @@ class VotingStrategy(
         return when {
             buyScore > sellScore -> Signal(
                 direction = OrderDirection.BUY,
-                confidence = buyScore.toDouble() / (buyScore + sellScore),
+                confidence = buyScore.toDouble() / configuredWeight,
                 reason = "${explanations.joinToString(", ")} → BUY (${buyScore} vs ${sellScore})"
             )
             sellScore > buyScore -> Signal(
                 direction = OrderDirection.SELL,
-                confidence = sellScore.toDouble() / (buyScore + sellScore),
+                confidence = sellScore.toDouble() / configuredWeight,
                 reason = "${explanations.joinToString(", ")} → SELL (${sellScore} vs ${buyScore})"
             )
             else -> Signal.HOLD

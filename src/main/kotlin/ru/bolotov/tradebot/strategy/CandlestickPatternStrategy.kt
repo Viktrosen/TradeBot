@@ -8,6 +8,7 @@ import ru.tinkoff.piapi.core.MarketDataService
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
@@ -20,8 +21,9 @@ class CandlestickPatternStrategy(
     override var description = "Стратегия на основе свечных паттернов (Engulfing, Hammer, Doji, Morning/Evening Star и др.)"
 
     // Настройки стратегии
-    var minConfidence: Double = 0.6
+    var minConfidence: Double = 0.75
     var lookbackCandles: Int = 30
+    private val loggedPatternKeys = ConcurrentHashMap<String, String>()
 
     // Поддерживаемые интервалы свечей
     enum class CandleTimeframe(val interval: CandleInterval, val minutes: Int) {
@@ -64,13 +66,12 @@ class CandlestickPatternStrategy(
         val pattern: PatternType?,
         val direction: OrderDirection,
         val confidence: Double,
-        val description: String
+        val description: String,
+        val candleKey: String? = null
     )
 
     override fun analyze(data: MarketData): Signal {
         val patternResult = data.candlestickPattern
-        logger.info { "📊 CandlestickPatternStrategy.analyze(): инструмент=${data.instrumentName}, паттерн=${patternResult?.direction}, confidence=${patternResult?.confidence}" }
-
         if (patternResult == null || patternResult.pattern == null) {
             return Signal.HOLD
         }
@@ -96,10 +97,16 @@ class CandlestickPatternStrategy(
                 return PatternResult(null, OrderDirection.HOLD, 0.0, "Недостаточно свечей")
             }
 
-            val patternResult = detectPatterns(candles)
+            val candleKey = "${currentTimeframe.name}:${candles.last().time.seconds}:${candles.last().time.nanos}"
+            val patternResult = detectPatterns(candles).copy(candleKey = candleKey)
 
             if (patternResult.pattern != null && patternResult.confidence >= minConfidence) {
-                logger.info { "🔍 Обнаружен паттерн: ${patternResult.description} (confidence: ${patternResult.confidence})" }
+                if (loggedPatternKeys.put(instrumentUid, candleKey) != candleKey) {
+                    logger.info {
+                        "Обнаружен паттерн для $instrumentUid: ${patternResult.description} " +
+                            "(уверенность: ${patternResult.confidence})"
+                    }
+                }
                 patternResult
             } else {
                 PatternResult(null, OrderDirection.HOLD, patternResult.confidence, patternResult.description)
@@ -136,6 +143,10 @@ class CandlestickPatternStrategy(
 
         return try {
             marketDataService.getCandlesSync(instrumentUid, from, now, interval)
+                .filter { candle ->
+                    val candleStart = Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
+                    !candleStart.plusSeconds(minutes * 60L).isAfter(now)
+                }
         } catch (e: Exception) {
             logger.error(e) { "Ошибка получения свечей для $instrumentUid (интервал: $minutes мин)" }
             emptyList()
@@ -148,6 +159,12 @@ class CandlestickPatternStrategy(
     fun setTimeframe(timeframe: CandleTimeframe) {
         currentTimeframe = timeframe
         logger.info { "🕯️ Таймфрейм свечной стратегии изменён на ${timeframe.name} (${timeframe.minutes} мин)" }
+    }
+
+    fun configureMinConfidence(value: Double) {
+        require(value in 0.75..1.0) { "Минимальная уверенность свечной стратегии должна быть от 0.75 до 1" }
+        minConfidence = value
+        logger.info { "Минимальная уверенность свечной стратегии изменена на $value" }
     }
 
     private fun detectPatterns(candles: List<HistoricCandle>): PatternResult {

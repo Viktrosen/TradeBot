@@ -99,6 +99,7 @@ class TradingBotService(
     private val emergencyCloseChunkDelayMs = 1500L
 
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
+    private val processedCandlestickSignals = ConcurrentHashMap<String, String>()
     private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
     private val signalDebounceMs = 5000L
     private var isPortfolioRestored = false
@@ -161,11 +162,12 @@ class TradingBotService(
                     }
 
                     candlestickPatternStrategy.setTimeframe(timeframe)
-                    candlestickPatternStrategy.minConfidence = config.minConfidence
+                    val minConfidence = config.minConfidence.coerceIn(0.75, 1.0)
+                    candlestickPatternStrategy.configureMinConfidence(minConfidence)
 
                     strategyManager.switchToCandlestickStrategy()  // ← без параметров
 
-                    logger.info { "📂 Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=${config.minConfidence}" }
+                    logger.info { "📂 Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=${minConfidence}" }
                 }
 
                 null -> {
@@ -360,14 +362,20 @@ class TradingBotService(
                         if (lastTime == null || now.toEpochMilli() - lastTime.toEpochMilli() > signalDebounceMs) {
                             val strategy = strategyManager.getCurrentStrategy()
                             val signal = strategy.analyze(marketData)
-                            val strategyExplanation = strategy.getExplanation(marketData)
                             logger.info { "🎯 АНАЛИЗ: инструмент=${marketData.instrumentName}, " +
                                     "паттерн=${marketData.candlestickPattern?.direction}, " +
                                     "сигнал=${signal.direction}, уверенность=${signal.confidence}" }
                             if (signal.direction != OrderDirection.HOLD && signal.confidence > 0.5) {
-                                logger.info { "✅ СИГНАЛ ПРИНЯТ: ${marketData.instrumentName} → ${signal.direction}" }
-                                lastSignalTime[marketData.instrumentId] = now
-                                emit(Signal.Trade(marketData, signal, strategy.name, strategyExplanation))
+                                if (canExecuteSignal(marketData, signal)) {
+                                    logger.info { "✅ СИГНАЛ ПРИНЯТ: ${marketData.instrumentName} → ${signal.direction}" }
+                                    marketData.candlestickPattern?.candleKey?.let { candleKey ->
+                                        processedCandlestickSignals[marketData.instrumentId] = candleKey
+                                    }
+                                    lastSignalTime[marketData.instrumentId] = now
+                                    emit(Signal.Trade(marketData, signal, strategy.name, strategy.getExplanation(marketData)))
+                                } else {
+                                    lastSignalTime[marketData.instrumentId] = now
+                                }
                             } else {
                                 logger.debug { "⏸️ СИГНАЛ ОТКЛОНЁН: ${marketData.instrumentName}, причина: ${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}" }
                             }
@@ -465,6 +473,70 @@ class TradingBotService(
             }
 
             else -> false
+        }
+    }
+
+    private suspend fun canExecuteSignal(
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal
+    ): Boolean {
+        val candleKey = marketData.candlestickPattern?.candleKey
+        if (candleKey != null && processedCandlestickSignals[marketData.instrumentId] == candleKey) {
+            logger.debug { "Повторный сигнал свечного паттерна для ${marketData.instrumentName} на той же свече пропущен" }
+            return false
+        }
+
+        if (signal.direction != OrderDirection.SELL) return true
+        return synchronizeLongPositionForSell(marketData)
+    }
+
+    /**
+     * Шорты отключены, поэтому SELL разрешён только для фактически имеющейся у брокера длинной позиции.
+     * Внешняя покупка синхронизируется с состоянием бота до закрытия позиции.
+     */
+    private suspend fun synchronizeLongPositionForSell(marketData: MarketData): Boolean {
+        val currentAccountId = accountId
+        if (currentAccountId == null) {
+            logger.warn { "Не удалось проверить позицию ${marketData.instrumentName}: не выбран брокерский счёт" }
+            return false
+        }
+
+        return try {
+            val brokerPosition = operationsService.getPortfolioSync(currentAccountId).positions
+                .firstOrNull { it.instrumentUid == marketData.instrumentId }
+
+            if (brokerPosition == null || brokerPosition.quantity <= BigDecimal.ZERO) {
+                logger.info {
+                    "Сигнал SELL для ${marketData.instrumentName} отклонён: длинной позиции в портфеле нет, шорты отключены"
+                }
+                return false
+            }
+
+            val existingPosition = _openPositions.value[marketData.instrumentId]
+            if (existingPosition?.direction == DomainOrderDirection.BUY) return true
+
+            val quantity = brokerPosition.quantity.toLong()
+            if (quantity <= 0) {
+                logger.warn { "Сигнал SELL для ${marketData.instrumentName} отклонён: количество позиции не удалось привести к лотам" }
+                return false
+            }
+
+            val restoredPosition = OpenPosition(
+                instrumentId = marketData.instrumentId,
+                instrumentName = marketData.instrumentName,
+                direction = DomainOrderDirection.BUY,
+                entryPrice = moneyToBigDecimal(brokerPosition.averagePositionPrice)
+                    .takeIf { it > BigDecimal.ZERO } ?: marketData.currentPrice,
+                quantity = quantity,
+                lotSize = marketData.lotSize,
+                entryTime = Instant.now()
+            )
+            _openPositions.value = _openPositions.value + (marketData.instrumentId to restoredPosition)
+            logger.info { "Позиция ${marketData.instrumentName} синхронизирована с портфелем для исполнения SELL" }
+            true
+        } catch (e: Exception) {
+            logger.error(e) { "Не удалось проверить позицию в портфеле для SELL ${marketData.instrumentName}" }
+            false
         }
     }
 
@@ -739,7 +811,7 @@ class TradingBotService(
             currentPosition == null -> {
                 // 🆕 Игнорируем сигналы SELL (шорт)
                 if (signalDirection == DomainOrderDirection.SELL) {
-                    logger.info { "⏸️ Игнорируем сигнал SELL для ${marketData.instrumentName} (короткие позиции отключены)" }
+                    logger.warn { "SELL для ${marketData.instrumentName} не исполнен: длинная позиция не была синхронизирована" }
                     return
                 }
 
@@ -1090,7 +1162,7 @@ class TradingBotService(
 
     fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
         candlestickPatternStrategy.setTimeframe(timeframe)
-        candlestickPatternStrategy.minConfidence = minConfidence
+        candlestickPatternStrategy.configureMinConfidence(minConfidence)
 
         strategyManager.switchToCandlestickStrategy()  // ← без параметров
 

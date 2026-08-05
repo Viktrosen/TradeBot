@@ -8,7 +8,10 @@ import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.tinkoff.piapi.core.InstrumentsService
 import java.math.BigDecimal
+import java.math.MathContext
+import java.math.RoundingMode
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
@@ -19,7 +22,8 @@ class MarketDataProvider(
     private val marketDataService: MarketDataService,
     private val instrumentsService: InstrumentsService
 ) {
-    private val instrumentCache = mutableMapOf<String, InstrumentInfo>()
+    private val instrumentCache = ConcurrentHashMap<String, InstrumentInfo>()
+    private val calculationContext = MathContext.DECIMAL64
 
     data class InstrumentInfo(
         val ticker: String,
@@ -28,7 +32,7 @@ class MarketDataProvider(
     )
 
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
-        logger.info { "Начинаем fetchMarketData для $instrumentUid" }
+        logger.info { "Начинаем получение рыночных данных для $instrumentUid" }
         return try {
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
@@ -49,7 +53,8 @@ class MarketDataProvider(
                 now,
                 CandleInterval.CANDLE_INTERVAL_5_MIN
             )
-            val candles: List<HistoricCandle> = candlesFuture.get(10, TimeUnit.SECONDS)
+            val candles = candlesFuture.get(10, TimeUnit.SECONDS)
+                .filter { candle -> isClosed(candle, now, 5 * 60L) }
             val closes = candles.map { quotationToBigDecimal(it.close) }
             val volumes = candles.map { it.volume }
 
@@ -57,14 +62,19 @@ class MarketDataProvider(
             val avgVolume = if (volumes.isNotEmpty()) volumes.average().toLong() else 0L
 
             // 3. Индикаторы
-            val ema5 = calculateEMA(closes, 5)
-            val ema21 = calculateEMA(closes, 21)
+            val ema5Series = calculateEMASeries(closes, 5)
+            val ema21Series = calculateEMASeries(closes, 21)
+            val ema5 = ema5Series?.lastOrNull()
+            val ema21 = ema21Series?.lastOrNull()
             val rsi = calculateRSI(closes, 14)
             val macd = calculateMACD(closes)
             val bollingerBands = calculateBollingerBands(closes, currentPrice)
             val atr = calculateATR(candles)  // 🆕
 
-            logger.info { "$displayName: цена=$currentPrice, EMA5=$ema5, EMA21=$ema21, RSI=$rsi, ATR=$atr" }
+            logger.info {
+                "$displayName: цена=${formatIndicator(currentPrice)}, EMA5=${formatIndicator(ema5)}, " +
+                    "EMA21=${formatIndicator(ema21)}, RSI=${rsi?.let { "%.2f".format(it) } ?: "нет данных"}, ATR=${formatIndicator(atr)}"
+            }
 
             MarketData(
                 instrumentId = instrumentUid,
@@ -73,6 +83,8 @@ class MarketDataProvider(
                 lotSize = instrumentInfo?.lotSize ?: 1,
                 ema5 = ema5,
                 ema21 = ema21,
+                previousEma5 = ema5Series?.dropLast(1)?.lastOrNull(),
+                previousEma21 = ema21Series?.dropLast(1)?.lastOrNull(),
                 rsi = rsi,
                 macd = macd,
                 bollingerBands = bollingerBands,
@@ -111,9 +123,11 @@ class MarketDataProvider(
 
         var atr = trueRanges.take(period).reduce { acc, tr -> acc + tr } / BigDecimal(period)
 
-        val multiplier = 2.0 / (period + 1)
+        val multiplier = BigDecimal.valueOf(2)
+            .divide(BigDecimal.valueOf((period + 1).toLong()), calculationContext)
         for (i in period until trueRanges.size) {
-            atr = trueRanges[i] * multiplier.toBigDecimal() + atr * (1 - multiplier).toBigDecimal()
+            atr = trueRanges[i].multiply(multiplier, calculationContext)
+                .add(atr.multiply(BigDecimal.ONE.subtract(multiplier), calculationContext), calculationContext)
         }
 
         return atr
@@ -155,15 +169,25 @@ class MarketDataProvider(
     }
 
     private fun calculateEMA(prices: List<BigDecimal>, period: Int): BigDecimal? {
+        return calculateEMASeries(prices, period)?.lastOrNull()
+    }
+
+    private fun calculateEMASeries(prices: List<BigDecimal>, period: Int): List<BigDecimal>? {
         if (prices.size < period) return null
-        val multiplier = 2.0 / (period + 1)
-        val initialSma = prices.take(period).map { it.toDouble() }.average()
-        var ema = BigDecimal(initialSma)
+
+        val multiplier = BigDecimal.valueOf(2)
+            .divide(BigDecimal.valueOf((period + 1).toLong()), calculationContext)
+        var ema = prices.take(period)
+            .reduce(BigDecimal::add)
+            .divide(BigDecimal.valueOf(period.toLong()), calculationContext)
+        val values = mutableListOf(ema)
+
         for (i in period until prices.size) {
-            val price = prices[i]
-            ema = price * multiplier.toBigDecimal() + ema * (1 - multiplier).toBigDecimal()
+            ema = prices[i].multiply(multiplier, calculationContext)
+                .add(ema.multiply(BigDecimal.ONE.subtract(multiplier), calculationContext), calculationContext)
+            values += ema
         }
-        return ema
+        return values
     }
 
     private fun calculateRSI(prices: List<BigDecimal>, period: Int): Double? {
@@ -183,11 +207,14 @@ class MarketDataProvider(
     }
 
     private fun calculateMACD(prices: List<BigDecimal>): MacdData? {
-        if (prices.size < 26) return null
-        val ema12 = calculateEMA(prices, 12) ?: return null
-        val ema26 = calculateEMA(prices, 26) ?: return null
-        val macdLine = ema12 - ema26
-        val signalLine = macdLine * BigDecimal("0.9")
+        if (prices.size < 34) return null
+        val ema12 = calculateEMASeries(prices, 12) ?: return null
+        val ema26 = calculateEMASeries(prices, 26) ?: return null
+        val macdSeries = ema12.drop(26 - 12).zip(ema26) { short, long ->
+            short.subtract(long, calculationContext)
+        }
+        val signalLine = calculateEMASeries(macdSeries, 9)?.lastOrNull() ?: return null
+        val macdLine = macdSeries.last()
         return MacdData(
             macdLine = macdLine,
             signalLine = signalLine,
@@ -241,4 +268,15 @@ class MarketDataProvider(
         val stdDev = Math.sqrt(variance)
         return stdDev * Math.sqrt(252.0) * 100
     }
+
+    private fun isClosed(candle: HistoricCandle, now: Instant, intervalSeconds: Long): Boolean {
+        val candleStart = Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
+        return !candleStart.plusSeconds(intervalSeconds).isAfter(now)
+    }
+
+    private fun formatIndicator(value: BigDecimal?): String = value
+        ?.setScale(4, RoundingMode.HALF_UP)
+        ?.stripTrailingZeros()
+        ?.toPlainString()
+        ?: "нет данных"
 }

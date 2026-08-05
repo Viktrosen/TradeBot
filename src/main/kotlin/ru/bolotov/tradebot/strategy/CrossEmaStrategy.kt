@@ -10,9 +10,11 @@ class CrossEmaStrategy : TradingStrategy {
     override fun analyze(data: MarketData): Signal {
         val ema5 = data.ema5 ?: return Signal(OrderDirection.HOLD, 0.0)
         val ema21 = data.ema21 ?: return Signal(OrderDirection.HOLD, 0.0)
+        val previousEma5 = data.previousEma5 ?: return Signal(OrderDirection.HOLD, 0.0)
+        val previousEma21 = data.previousEma21 ?: return Signal(OrderDirection.HOLD, 0.0)
         return when {
-            ema5 > ema21 -> Signal(OrderDirection.BUY, 0.7)
-            ema5 < ema21 -> Signal(OrderDirection.SELL, 0.7)
+            previousEma5 <= previousEma21 && ema5 > ema21 -> Signal(OrderDirection.BUY, 0.7)
+            previousEma5 >= previousEma21 && ema5 < ema21 -> Signal(OrderDirection.SELL, 0.7)
             else -> Signal(OrderDirection.HOLD, 0.0)
         }
     }
@@ -24,9 +26,11 @@ class CrossEmaStrategy : TradingStrategy {
         EMA(21): ${data.ema21?.toPlainString() ?: "нет данных"}
         
         ${when {
-        data.ema5 != null && data.ema21 != null && data.ema5 > data.ema21 ->
+        data.previousEma5 != null && data.previousEma21 != null && data.ema5 != null && data.ema21 != null &&
+            data.previousEma5 <= data.previousEma21 && data.ema5 > data.ema21 ->
             "Короткая EMA пересекла длинную снизу вверх — сигнал к покупке"
-        data.ema5 != null && data.ema21 != null && data.ema5 < data.ema21 ->
+        data.previousEma5 != null && data.previousEma21 != null && data.ema5 != null && data.ema21 != null &&
+            data.previousEma5 >= data.previousEma21 && data.ema5 < data.ema21 ->
             "Короткая EMA пересекла длинную сверху вниз — сигнал к продаже"
         else -> "Нет чёткого сигнала"
     }}

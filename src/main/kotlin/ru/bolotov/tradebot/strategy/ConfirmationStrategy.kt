@@ -13,10 +13,21 @@ class ConfirmationStrategy : ConfigurableStrategy {
 
     private var requiredIndicators: List<String> = listOf("EMA", "RSI", "MACD", "BB")
 
+    private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB", "BOLLINGER")
+
     override fun configure(config: StrategyConfiguration) {
         when (config) {
             is StrategyConfiguration.Confirmation -> {
-                requiredIndicators = config.requiredIndicators
+                val normalizedIndicators = config.requiredIndicators.map { it.uppercase() }.distinct()
+                require(normalizedIndicators.isNotEmpty()) {
+                    "Для стратегии подтверждения необходимо указать хотя бы один индикатор"
+                }
+                require(normalizedIndicators.all { it in supportedIndicators }) {
+                    "Неизвестные индикаторы: " +
+                        normalizedIndicators.filterNot { it in supportedIndicators }.joinToString(", ")
+                }
+
+                requiredIndicators = normalizedIndicators
                 name = "Confirmation (${requiredIndicators.joinToString(" + ")})"
                 description = "Стратегия подтверждения. Требуется согласие индикаторов: ${requiredIndicators.joinToString(", ")}"
                 logger.info { "🔧 ConfirmationStrategy настроена: $requiredIndicators" }
@@ -26,6 +37,8 @@ class ConfirmationStrategy : ConfigurableStrategy {
     }
 
     override fun analyze(data: MarketData): Signal {
+        if (requiredIndicators.isEmpty()) return Signal.HOLD
+
         val signals = mutableMapOf<String, Signal>()
 
         requiredIndicators.forEach { indicator ->
