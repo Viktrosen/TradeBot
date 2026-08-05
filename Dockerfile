@@ -30,12 +30,23 @@ RUN mkdir -p /application \
     '    cp "$JAVA_HOME/lib/security/cacerts" "$TRUSTSTORE_PATH"' \
     '  fi' \
     '  for host in sandbox-invest-public-api.tbank.ru invest-public-api.tbank.ru; do' \
-    '    cert_file="$CERT_DIR/$host.crt"' \
-    '    echo | openssl s_client -servername "$host" -connect "$host:443" 2>/dev/null | openssl x509 -outform PEM > "$cert_file" || true' \
-    '    if [ -s "$cert_file" ]; then' \
-    '      alias_name="tbank-$host"' \
+    '    bundle_file="$CERT_DIR/$host.pem"' \
+    '    echo "Импорт TLS-сертификатов для $host"' \
+    '    echo | openssl s_client -showcerts -servername "$host" -connect "$host:443" > "$bundle_file" 2>/dev/null || true' \
+    '    awk -v dir="$CERT_DIR" -v host="$host" '"'"'/-----BEGIN CERTIFICATE-----/ { n++; file=sprintf("%s/%s-%02d.crt", dir, host, n) } file { print > file } /-----END CERTIFICATE-----/ { close(file); file="" }'"'"' "$bundle_file"' \
+    '    index=0' \
+    '    for cert_file in "$CERT_DIR/$host"-*.crt; do' \
+    '      [ -s "$cert_file" ] || continue' \
+    '      index=$((index + 1))' \
+    '      alias_name="tbank-$host-$index"' \
+    '      subject="$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null || true)"' \
+    '      issuer="$(openssl x509 -in "$cert_file" -noout -issuer 2>/dev/null || true)"' \
+    '      echo "Добавляем сертификат $alias_name: $subject / $issuer"' \
     '      keytool -delete -alias "$alias_name" -keystore "$TRUSTSTORE_PATH" -storepass "$TRUSTSTORE_PASSWORD" >/dev/null 2>&1 || true' \
-    '      keytool -importcert -noprompt -trustcacerts -alias "$alias_name" -file "$cert_file" -keystore "$TRUSTSTORE_PATH" -storepass "$TRUSTSTORE_PASSWORD" >/dev/null 2>&1 || true' \
+    '      keytool -importcert -noprompt -trustcacerts -alias "$alias_name" -file "$cert_file" -keystore "$TRUSTSTORE_PATH" -storepass "$TRUSTSTORE_PASSWORD"' \
+    '    done' \
+    '    if [ "$index" -eq 0 ]; then' \
+    '      echo "Не удалось получить сертификаты для $host"' \
     '    fi' \
     '  done' \
     '  export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djavax.net.ssl.trustStore=$TRUSTSTORE_PATH -Djavax.net.ssl.trustStorePassword=$TRUSTSTORE_PASSWORD"' \
