@@ -12,6 +12,8 @@ class InstrumentSelectionService(
     private val filterProperties: InstrumentFilterProperties,
     private val instrumentFilterConfigPersistenceService: InstrumentFilterConfigPersistenceService
 ) {
+    data class Filters(val minDailyVolume: Long, val minVolatility: Double, val maxVolatility: Double, val maxCount: Int)
+    fun getFilters() = Filters(filterProperties.minDailyVolume, filterProperties.minVolatility, filterProperties.maxVolatility, filterProperties.maxCount)
 
     fun loadFilterConfiguration() {
         val config = instrumentFilterConfigPersistenceService.loadConfig()
@@ -61,4 +63,3 @@ class InstrumentSelectionService(
         }
     }
 }
-

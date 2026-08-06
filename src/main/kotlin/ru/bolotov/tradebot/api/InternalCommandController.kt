@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.service.TradingBotService
+import ru.bolotov.tradebot.service.InstrumentSelectionService
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.StrategyManager
 
@@ -17,7 +18,8 @@ class InternalCommandController(
     private val tradingBotService: TradingBotService,
     private val strategyManager: StrategyManager,
     private val config: PositionSizingConfig,
-    private val candlestickPatternStrategy: CandlestickPatternStrategy
+    private val candlestickPatternStrategy: CandlestickPatternStrategy,
+    private val instrumentSelectionService: InstrumentSelectionService
 ) {
 
     // ==================== БОТ ====================
@@ -196,6 +198,9 @@ class InternalCommandController(
         )
         return ResponseEntity.ok(mapOf("status" to "updated", "filters" to request))
     }
+
+    @GetMapping("/instruments/filters")
+    fun getInstrumentFilters(): ResponseEntity<Any> = ResponseEntity.ok(instrumentSelectionService.getFilters())
 
     @PostMapping("/instruments/rescan")
     fun rescanInstruments(): ResponseEntity<Map<String, Any>> {
