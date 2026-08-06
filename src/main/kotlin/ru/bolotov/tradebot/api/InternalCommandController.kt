@@ -170,7 +170,7 @@ class InternalCommandController(
 
     @GetMapping("/instruments")
     fun getInstruments(): ResponseEntity<Map<String, Any>> {
-        val instruments = tradingBotService.getActiveInstruments()
+        val instruments = runBlocking { tradingBotService.getActiveInstrumentDetails() }
         return ResponseEntity.ok(mapOf("instruments" to instruments, "count" to instruments.size))
     }
 

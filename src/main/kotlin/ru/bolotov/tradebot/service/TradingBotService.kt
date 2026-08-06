@@ -268,6 +268,10 @@ class TradingBotService(
     }
 
     fun getActiveInstruments(): List<String> = _activeInstruments.value
+    suspend fun getActiveInstrumentDetails(): List<Map<String, String>> = _activeInstruments.value.map { uid ->
+        val info = marketDataProvider.getInstrumentInfo(uid)
+        mapOf("id" to uid, "ticker" to (info?.ticker ?: uid), "name" to (info?.name ?: "Инструмент"))
+    }
     fun getStatus(): Boolean = _isRunning.value
     fun getCurrentStrategy(): TradingStrategy = strategyManager.getCurrentStrategy()
 

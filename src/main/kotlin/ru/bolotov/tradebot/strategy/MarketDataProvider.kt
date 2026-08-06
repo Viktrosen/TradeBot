@@ -133,7 +133,7 @@ class MarketDataProvider(
         return atr
     }
 
-    private suspend fun getInstrumentInfo(instrumentUid: String): InstrumentInfo? {
+    suspend fun getInstrumentInfo(instrumentUid: String): InstrumentInfo? {
         instrumentCache[instrumentUid]?.let { return it }
 
         return try {
