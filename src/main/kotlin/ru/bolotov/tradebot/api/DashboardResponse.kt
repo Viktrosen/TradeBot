@@ -25,6 +25,8 @@ data class ClosedTradeResponse(
     val instrumentId: String,
     val instrumentName: String,
     val direction: String,
+    val entryPrice: BigDecimal,
+    val entryTime: String?,
     val closePrice: BigDecimal,
     val quantity: Long,
     val lotSize: Int,

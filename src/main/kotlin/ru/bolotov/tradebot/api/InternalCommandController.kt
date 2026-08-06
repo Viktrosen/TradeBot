@@ -223,6 +223,16 @@ class InternalCommandController(
     fun getDashboard(): ResponseEntity<DashboardResponse> =
         ResponseEntity.ok(tradingBotService.getDashboard())
 
+    @PostMapping("/positions/{positionId}/close")
+    fun closePosition(@PathVariable positionId: String): ResponseEntity<Map<String, Any>> {
+        val closed = runBlocking { tradingBotService.closePosition(positionId) }
+        return if (closed) {
+            ResponseEntity.ok(mapOf("status" to "closed", "positionId" to positionId))
+        } else {
+            ResponseEntity.notFound().build()
+        }
+    }
+
     @PostMapping("/close-all")
     fun closeAllPositions(): ResponseEntity<Map<String, Any>> {
         // Запускаем закрытие в фоне, не блокируя ответ

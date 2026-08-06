@@ -22,6 +22,8 @@ interface TradeEventRepository : JpaRepository<TradeEvent, String> {
         eventType: EventType
     ): List<TradeEvent>
 
+    fun findByPositionIdAndEventType(positionId: String, eventType: EventType): TradeEvent?
+
     fun findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
         instrumentId: String,
         direction: OrderDirection,

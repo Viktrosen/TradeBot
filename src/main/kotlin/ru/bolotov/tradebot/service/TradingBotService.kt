@@ -204,11 +204,14 @@ class TradingBotService(
         return DashboardResponse(
             openPositions = getOpenPositions(),
             closedTrades = closedEvents.map { event ->
+                val openEvent = event.positionId?.let(tradeEventService::findOpenEvent)
                 ClosedTradeResponse(
                     positionId = requireNotNull(event.positionId),
                     instrumentId = event.instrumentId,
                     instrumentName = event.instrumentName,
                     direction = event.direction.name,
+                    entryPrice = openEvent?.price ?: event.price,
+                    entryTime = openEvent?.processedAt?.toString() ?: openEvent?.createdAt?.toString(),
                     closePrice = event.price,
                     quantity = event.quantity,
                     lotSize = event.lotSize,
@@ -223,6 +226,16 @@ class TradingBotService(
                 closedTradesCount = closedEvents.size
             )
         )
+    }
+
+    suspend fun closePosition(positionId: String): Boolean {
+        val position = _openPositions.value.values.firstOrNull { it.positionId == positionId } ?: return false
+        val currentAccountId = accountId ?: return false
+        val result = positionLifecycleService.closePosition(currentAccountId, position, "MANUAL_CLOSE")
+        if (result.removeFromState) {
+            _openPositions.value = _openPositions.value - position.instrumentId
+        }
+        return result.closed
     }
 
     suspend fun closeAllPositionsAsync() {

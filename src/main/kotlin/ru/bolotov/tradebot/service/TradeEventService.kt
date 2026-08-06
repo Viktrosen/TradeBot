@@ -29,6 +29,9 @@ class TradeEventService(
             EventType.CLOSE
         )
 
+    fun findOpenEvent(positionId: String): TradeEvent? =
+        tradeEventRepository.findByPositionIdAndEventType(positionId, EventType.OPEN)
+
     fun findLastOpenPositionId(instrumentId: String, direction: OrderDirection): String? =
         tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
             instrumentId,
