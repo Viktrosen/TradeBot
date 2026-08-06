@@ -133,7 +133,7 @@ class PositionLifecycleService(
                     val closePrice = fill.executedPrice ?: orderResult.executedPrice ?: position.entryPrice
                     val closeCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
                     val pnl = calculatePnl(position, closePrice, closeCommission)
-                    tradeEventService.saveCloseEventOnce(
+                    val closeEvent = tradeEventService.saveCloseEventOnce(
                         position = position,
                         closePrice = closePrice,
                         pnl = pnl,
@@ -141,6 +141,7 @@ class PositionLifecycleService(
                         explanation = "Экстренное закрытие позиции рыночной заявкой, P&L: $pnl RUB"
                     )
                     positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
+                    closeEvent?.let(eventPublisherService::publishTradeExecuted)
                     eventPublisherService.publishPortfolioChanged()
                     return ClosePositionResult(position, closed = true, removeFromState = true)
                 }
@@ -212,10 +213,11 @@ class PositionLifecycleService(
             val executedPrice = fill.executedPrice ?: closePrice
             val closeCommission = fill.executedCommission ?: BigDecimal.ZERO
             val pnl = calculatePnl(position, executedPrice, closeCommission)
-            tradeEventService.saveCloseEventOnce(position, executedPrice, pnl, reason)
+            val closeEvent = tradeEventService.saveCloseEventOnce(position, executedPrice, pnl, reason)
             positionLifecycleLogger.info {
                 "Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl RUB"
             }
+            closeEvent?.let(eventPublisherService::publishTradeExecuted)
             eventPublisherService.publishPortfolioChanged()
             return ClosePositionResult(position, closed = true, removeFromState = true)
         } catch (e: Exception) {

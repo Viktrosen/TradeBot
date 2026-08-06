@@ -17,6 +17,11 @@ interface TradeEventRepository : JpaRepository<TradeEvent, String> {
 
     fun findByEventType(eventType: ru.bolotov.tradebot.domain.model.EventType): List<TradeEvent>
 
+    fun findByStatusAndEventTypeOrderByProcessedAtDesc(
+        status: EventStatus,
+        eventType: EventType
+    ): List<TradeEvent>
+
     fun findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
         instrumentId: String,
         direction: OrderDirection,

@@ -23,6 +23,12 @@ class TradeEventService(
     fun hasCloseEvent(positionId: String): Boolean =
         tradeEventRepository.existsByPositionIdAndEventType(positionId, EventType.CLOSE)
 
+    fun findProcessedCloseEvents(): List<TradeEvent> =
+        tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(
+            EventStatus.PROCESSED,
+            EventType.CLOSE
+        )
+
     fun findLastOpenPositionId(instrumentId: String, direction: OrderDirection): String? =
         tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
             instrumentId,
@@ -94,12 +100,12 @@ class TradeEventService(
         pnl: BigDecimal,
         reason: String,
         explanation: String = "Закрытие позиции, P&L: $pnl RUB"
-    ): Boolean {
+    ): TradeEvent? {
         if (hasCloseEvent(position.positionId)) {
             tradeEventLogger.warn {
                 "CLOSE-событие уже существует, дубль не сохраняем: ${position.positionId}"
             }
-            return false
+            return null
         }
 
         val closeEvent = TradeEvent(
@@ -118,8 +124,7 @@ class TradeEventService(
             status = EventStatus.PROCESSED,
             processedAt = Instant.now()
         )
-        tradeEventRepository.save(closeEvent)
-        return true
+        return tradeEventRepository.save(closeEvent)
     }
 
     private fun buildOpenTradeReason(strategyName: String, signal: Signal): String =

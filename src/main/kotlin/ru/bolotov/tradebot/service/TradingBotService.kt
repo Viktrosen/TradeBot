@@ -22,6 +22,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.awaitClose
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.api.ClosedTradeResponse
+import ru.bolotov.tradebot.api.DashboardMetricsResponse
+import ru.bolotov.tradebot.api.DashboardResponse
+import ru.bolotov.tradebot.api.OpenPositionResponse
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.MarketData
@@ -55,6 +59,7 @@ class TradingBotService(
     private val tradeDecisionService: TradeDecisionService,
     private val positionLifecycleService: PositionLifecycleService,
     private val portfolioSnapshotService: PortfolioSnapshotService,
+    private val tradeEventService: TradeEventService,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long
 ) {
     private val _isRunning = MutableStateFlow(false)
@@ -168,20 +173,57 @@ class TradingBotService(
         restartPriceStreamIfRunning()
     }
 
-    fun getOpenPositions(): List<Map<String, Any>> =
+    fun getOpenPositions(): List<OpenPositionResponse> =
         _openPositions.value.values.map { position ->
-            mapOf(
-                "positionId" to position.positionId,
-                "instrumentId" to position.instrumentId,
-                "instrumentName" to position.instrumentName,
-                "direction" to position.direction.name,
-                "entryPrice" to position.entryPrice.toPlainString(),
-                "quantity" to position.quantity,
-                "lotSize" to position.lotSize,
-                "entryCommission" to position.entryCommission.toPlainString(),
-                "entryTime" to position.entryTime.toString()
+            OpenPositionResponse(
+                positionId = position.positionId,
+                instrumentId = position.instrumentId,
+                instrumentName = position.instrumentName,
+                direction = position.direction.name,
+                entryPrice = position.entryPrice,
+                quantity = position.quantity,
+                lotSize = position.lotSize,
+                entryCommission = position.entryCommission,
+                entryTime = position.entryTime.toString()
             )
         }
+
+    fun getDashboard(): DashboardResponse {
+        val closedEvents = tradeEventService.findProcessedCloseEvents()
+        val todayStart = java.time.LocalDate.now()
+            .atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant()
+        val realizedPnl = closedEvents.fold(BigDecimal.ZERO) { total, event -> total + (event.pnl ?: BigDecimal.ZERO) }
+        val dailyPnl = closedEvents
+            .filter { (it.processedAt ?: it.createdAt) >= todayStart }
+            .fold(BigDecimal.ZERO) { total, event -> total + (event.pnl ?: BigDecimal.ZERO) }
+        val winRate = if (closedEvents.isEmpty()) 0.0 else {
+            closedEvents.count { (it.pnl ?: BigDecimal.ZERO) > BigDecimal.ZERO }.toDouble() / closedEvents.size * 100
+        }
+
+        return DashboardResponse(
+            openPositions = getOpenPositions(),
+            closedTrades = closedEvents.map { event ->
+                ClosedTradeResponse(
+                    positionId = requireNotNull(event.positionId),
+                    instrumentId = event.instrumentId,
+                    instrumentName = event.instrumentName,
+                    direction = event.direction.name,
+                    closePrice = event.price,
+                    quantity = event.quantity,
+                    lotSize = event.lotSize,
+                    realizedPnl = event.pnl ?: BigDecimal.ZERO,
+                    closedAt = (event.processedAt ?: event.createdAt).toString()
+                )
+            },
+            metrics = DashboardMetricsResponse(
+                realizedPnl = realizedPnl,
+                dailyPnl = dailyPnl,
+                winRate = winRate,
+                closedTradesCount = closedEvents.size
+            )
+        )
+    }
 
     suspend fun closeAllPositionsAsync() {
         if (isClosingPositions) {
