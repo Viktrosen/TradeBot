@@ -154,7 +154,8 @@ class InternalCommandController(
                     mapOf("name" to "ema", "type" to "simple", "description" to "Cross EMA (5/21)"),
                     mapOf("name" to "rsi", "type" to "simple", "description" to "RSI oversold/overbought"),
                     mapOf("name" to "macd", "type" to "simple", "description" to "MACD crossover"),
-                    mapOf("name" to "confirmation", "type" to "voting", "description" to "EMA+RSI+MACD+BB голосование"),
+                    mapOf("name" to "confirmation", "type" to "confirmation", "description" to "Подтверждение сигналов: EMA, RSI, MACD, BB"),
+                    mapOf("name" to "voting", "type" to "voting", "description" to "Взвешенное голосование EMA, RSI, MACD, BB"),
                     mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)")
                 ),
                 "current" to mapOf(
