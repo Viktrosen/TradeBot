@@ -17,6 +17,9 @@ class PortfolioSnapshotService(
     private val objectMapper: ObjectMapper,
     private val eventPublisherService: EventPublisherService
 ) {
+    fun getLatestAvailableCash(): BigDecimal =
+        portfolioSnapshotRepository.findTopByOrderByTimestampDesc()?.availableCash ?: BigDecimal.ZERO
+
 
     suspend fun takeSnapshot(accountId: String?) {
         try {
@@ -72,4 +75,3 @@ class PortfolioSnapshotService(
         }
     }
 }
-

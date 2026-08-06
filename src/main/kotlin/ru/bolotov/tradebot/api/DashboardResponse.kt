@@ -38,5 +38,6 @@ data class DashboardMetricsResponse(
     val realizedPnl: BigDecimal,
     val dailyPnl: BigDecimal,
     val winRate: Double,
-    val closedTradesCount: Int
+    val closedTradesCount: Int,
+    val availableCash: BigDecimal
 )

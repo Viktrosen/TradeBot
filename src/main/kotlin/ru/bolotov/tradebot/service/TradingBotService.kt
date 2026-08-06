@@ -223,7 +223,8 @@ class TradingBotService(
                 realizedPnl = realizedPnl,
                 dailyPnl = dailyPnl,
                 winRate = winRate,
-                closedTradesCount = closedEvents.size
+                closedTradesCount = closedEvents.size,
+                availableCash = portfolioSnapshotService.getLatestAvailableCash()
             )
         )
     }
