@@ -50,4 +50,9 @@ class EventPublisherService(
         rabbitTemplate.convertAndSend("trade.events", "bot.status.changed", message)
         logger.info { "Опубликовано событие bot.status.changed: $status" }
     }
+
+    fun publishCapitalUsageLimitReached(usagePercent: Double, limitPercent: Double) {
+        val message = objectMapper.writeValueAsString(mapOf("eventType" to "CAPITAL_USAGE_LIMIT_REACHED", "data" to mapOf("usagePercent" to usagePercent, "limitPercent" to limitPercent)))
+        rabbitTemplate.convertAndSend("trade.events", "capital.usage.limit.reached", message)
+    }
 }

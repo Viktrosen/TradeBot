@@ -10,7 +10,8 @@ private val logger = KotlinLogging.logger {}
 
 @Service
 class PositionSizingService(
-    private val config: PositionSizingConfig
+    private val config: PositionSizingConfig,
+    private val eventPublisherService: EventPublisherService
 ) {
 
     fun calculatePositionSize(
@@ -116,6 +117,7 @@ class PositionSizingService(
         val maxUsage = config.maxCapitalUsage.toBigDecimal()
 
         if (capitalUsage > maxUsage) {
+            eventPublisherService.publishCapitalUsageLimitReached((capitalUsage * BigDecimal(100)).toDouble(), (maxUsage * BigDecimal(100)).toDouble())
             logger.debug { "⚠️ Превышен лимит капитала: ${"%.1f".format(capitalUsage * BigDecimal(100))}% > ${"%.1f".format(maxUsage * BigDecimal(100))}%" }
             return false
         }
