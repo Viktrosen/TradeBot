@@ -168,6 +168,12 @@ class InternalCommandController(
 
     // ==================== ИНСТРУМЕНТЫ ====================
 
+    @GetMapping("/instruments")
+    fun getInstruments(): ResponseEntity<Map<String, Any>> {
+        val instruments = tradingBotService.getActiveInstruments()
+        return ResponseEntity.ok(mapOf("instruments" to instruments, "count" to instruments.size))
+    }
+
     @PostMapping("/instruments")
     fun updateInstruments(@RequestBody request: Map<String, List<String>>): ResponseEntity<Map<String, Any>> {
         val instruments = request["instruments"] ?: emptyList()
