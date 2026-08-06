@@ -35,6 +35,7 @@ class TradeEventService(
         marketData: MarketData,
         direction: OrderDirection,
         quantity: Long,
+        lotSize: Int,
         totalValue: BigDecimal,
         strategyName: String,
         signal: Signal,
@@ -46,6 +47,7 @@ class TradeEventService(
             direction = direction,
             price = marketData.currentPrice,
             quantity = quantity,
+            lotSize = lotSize,
             totalValue = totalValue,
             reason = buildOpenTradeReason(strategyName, signal),
             explanation = strategyExplanation,
@@ -106,6 +108,7 @@ class TradeEventService(
             direction = position.direction,
             price = closePrice,
             quantity = position.quantity,
+            lotSize = position.lotSize,
             totalValue = closePrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal(),
             reason = reason,
             pnl = pnl,
@@ -126,4 +129,3 @@ class TradeEventService(
             strategyName
         }
 }
-

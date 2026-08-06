@@ -25,6 +25,9 @@ data class TradeEvent(
 
     var quantity: Long,
 
+    @Column(name = "lot_size")
+    var lotSize: Int,
+
     @Column(name = "total_value", precision = 20, scale = 4)
     var totalValue: BigDecimal,
 

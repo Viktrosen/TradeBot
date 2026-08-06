@@ -46,6 +46,7 @@ class PositionLifecycleService(
             marketData = marketData,
             direction = direction,
             quantity = positionSize.quantity,
+            lotSize = marketData.lotSize,
             totalValue = positionSize.value,
             strategyName = strategyName,
             signal = signal,
@@ -330,4 +331,3 @@ data class ClosePositionResult(
     val closed: Boolean,
     val removeFromState: Boolean
 )
-
