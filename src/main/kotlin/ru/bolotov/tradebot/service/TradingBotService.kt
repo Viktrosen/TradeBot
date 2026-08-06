@@ -228,14 +228,17 @@ class TradingBotService(
         )
     }
 
-    suspend fun closePosition(positionId: String): Boolean {
-        val position = _openPositions.value.values.firstOrNull { it.positionId == positionId } ?: return false
-        val currentAccountId = accountId ?: return false
+    data class ManualCloseResult(val status: String, val closed: Boolean)
+
+    suspend fun closePosition(positionId: String): ManualCloseResult {
+        val position = _openPositions.value.values.firstOrNull { it.positionId == positionId }
+            ?: return ManualCloseResult("already_closed", false)
+        val currentAccountId = accountId ?: return ManualCloseResult("account_not_selected", false)
         val result = positionLifecycleService.closePosition(currentAccountId, position, "MANUAL_CLOSE")
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - position.instrumentId
         }
-        return result.closed
+        return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
     }
 
     suspend fun closeAllPositionsAsync() {

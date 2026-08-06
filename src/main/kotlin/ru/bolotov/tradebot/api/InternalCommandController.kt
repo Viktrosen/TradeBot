@@ -237,11 +237,11 @@ class InternalCommandController(
 
     @PostMapping("/positions/{positionId}/close")
     fun closePosition(@PathVariable positionId: String): ResponseEntity<Map<String, Any>> {
-        val closed = runBlocking { tradingBotService.closePosition(positionId) }
-        return if (closed) {
+        val result = runBlocking { tradingBotService.closePosition(positionId) }
+        return if (result.closed) {
             ResponseEntity.ok(mapOf("status" to "closed", "positionId" to positionId))
         } else {
-            ResponseEntity.notFound().build()
+            ResponseEntity.unprocessableEntity().body(mapOf("status" to result.status, "positionId" to positionId))
         }
     }
 
