@@ -100,6 +100,22 @@ class MarketDataProvider(
         }
     }
 
+    fun getCurrentPrices(instrumentUids: List<String>): Map<String, BigDecimal> {
+        if (instrumentUids.isEmpty()) return emptyMap()
+
+        return try {
+            marketDataService
+                .getLastPrices(instrumentUids.distinct())
+                .get(10, TimeUnit.SECONDS)
+                .associate { lastPrice ->
+                    lastPrice.instrumentUid to quotationToBigDecimal(lastPrice.price)
+                }
+        } catch (error: Exception) {
+            logger.error(error) { "Не удалось получить текущие цены открытых позиций" }
+            emptyMap()
+        }
+    }
+
     // 🆕 Расчёт ATR (Average True Range)
     private fun calculateATR(candles: List<HistoricCandle>, period: Int = 14): BigDecimal? {
         if (candles.size < period + 1) return null

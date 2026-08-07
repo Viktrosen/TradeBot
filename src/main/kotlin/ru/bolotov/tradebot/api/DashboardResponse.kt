@@ -14,6 +14,8 @@ data class OpenPositionResponse(
     val instrumentName: String,
     val direction: String,
     val entryPrice: BigDecimal,
+    val currentPrice: BigDecimal?,
+    val unrealizedPnl: BigDecimal?,
     val quantity: Long,
     val lotSize: Int,
     val entryCommission: BigDecimal,

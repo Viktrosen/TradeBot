@@ -173,20 +173,39 @@ class TradingBotService(
         restartPriceStreamIfRunning()
     }
 
-    fun getOpenPositions(): List<OpenPositionResponse> =
-        _openPositions.value.values.map { position ->
-            OpenPositionResponse(
-                positionId = position.positionId,
-                instrumentId = position.instrumentId,
-                instrumentName = position.instrumentName,
-                direction = position.direction.name,
-                entryPrice = position.entryPrice,
-                quantity = position.quantity,
-                lotSize = position.lotSize,
-                entryCommission = position.entryCommission,
-                entryTime = position.entryTime.toString()
-            )
+    fun getOpenPositions(): List<OpenPositionResponse> {
+        val positions = _openPositions.value.values.toList()
+        val currentPrices = marketDataProvider.getCurrentPrices(
+            positions.map(OpenPosition::instrumentId)
+        )
+
+        return positions.map { position ->
+            position.toResponse(currentPrices[position.instrumentId])
         }
+    }
+
+    private fun OpenPosition.toResponse(currentPrice: BigDecimal?): OpenPositionResponse =
+        OpenPositionResponse(
+            positionId = positionId,
+            instrumentId = instrumentId,
+            instrumentName = instrumentName,
+            direction = direction.name,
+            entryPrice = entryPrice,
+            currentPrice = currentPrice,
+            unrealizedPnl = currentPrice?.let { price ->
+                calculateUnrealizedPnl(price)
+            },
+            quantity = quantity,
+            lotSize = lotSize,
+            entryCommission = entryCommission,
+            entryTime = entryTime.toString()
+        )
+
+    private fun OpenPosition.calculateUnrealizedPnl(currentPrice: BigDecimal): BigDecimal =
+        currentPrice
+            .subtract(entryPrice)
+            .multiply(BigDecimal.valueOf(quantity))
+            .multiply(BigDecimal.valueOf(lotSize.toLong()))
 
     fun getDashboard(): DashboardResponse {
         val closedEvents = tradeEventService.findProcessedCloseEvents()
