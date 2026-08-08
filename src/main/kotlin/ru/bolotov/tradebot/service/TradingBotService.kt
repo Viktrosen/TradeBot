@@ -391,8 +391,11 @@ class TradingBotService(
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
             val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
-            val patternResult = if (strategyManager.isCandlestickStrategyActive()) {
-                candlestickPatternStrategy.analyzePatternWithCandles(lastPrice.instrumentUid)
+            val patternResult = if (strategyManager.isCandlestickStrategyActive() && marketData != null) {
+                candlestickPatternStrategy.analyzePatternWithCandles(
+                    instrumentUid = lastPrice.instrumentUid,
+                    confirmationPrice = marketData.currentPrice
+                )
                     .takeIf { it.pattern != null && it.confidence >= candlestickPatternStrategy.minConfidence }
             } else {
                 null

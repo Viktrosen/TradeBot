@@ -23,6 +23,9 @@ class RabbitMQConfig {
     fun queueBotStatusChanged(): Queue = Queue("bot.status.changed.queue", true)
 
     @Bean
+    fun queueBotHeartbeat(): Queue = Queue("bot.heartbeat.queue", true)
+
+    @Bean
     fun queuePositionPriceUpdated(): Queue = Queue("position.price.updated.queue", true)
 
     @Bean
@@ -45,6 +48,12 @@ class RabbitMQConfig {
         .bind(queueBotStatusChanged())
         .to(tradeEventsExchange())
         .with("bot.status.changed")
+
+    @Bean
+    fun bindingBotHeartbeat(): Binding = BindingBuilder
+        .bind(queueBotHeartbeat())
+        .to(tradeEventsExchange())
+        .with("bot.heartbeat")
 
     @Bean
     fun bindingPositionPriceUpdated(): Binding = BindingBuilder

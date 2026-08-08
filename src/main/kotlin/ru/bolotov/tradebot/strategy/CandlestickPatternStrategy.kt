@@ -24,6 +24,12 @@ class CandlestickPatternStrategy(
     var minConfidence: Double = 0.70
     var lookbackCandles: Int = 30
     private val loggedPatternKeys = ConcurrentHashMap<String, String>()
+    private val candleCache = ConcurrentHashMap<String, CachedCandles>()
+
+    private data class CachedCandles(
+        val candles: List<HistoricCandle>,
+        val loadedAt: Instant
+    )
 
     // Поддерживаемые интервалы свечей
     enum class CandleTimeframe(val interval: CandleInterval, val minutes: Int) {
@@ -70,6 +76,21 @@ class CandlestickPatternStrategy(
         val candleKey: String? = null
     )
 
+    data class PatternBacktestStats(
+        val signals: Int,
+        val profitableSignals: Int,
+        val winRate: Double,
+        val averageReturnPercent: Double
+    )
+
+    data class CandlestickBacktestReport(
+        val timeframe: CandleTimeframe,
+        val signals: Int,
+        val winRate: Double,
+        val averageReturnPercent: Double,
+        val byPattern: Map<PatternType, PatternBacktestStats>
+    )
+
     override fun analyze(data: MarketData): Signal {
         val patternResult = data.candlestickPattern
         if (patternResult == null || patternResult.pattern == null) {
@@ -90,7 +111,10 @@ class CandlestickPatternStrategy(
     /**
      * Анализ с получением свечей (основной метод)
      */
-    suspend fun analyzePatternWithCandles(instrumentUid: String): PatternResult {
+    suspend fun analyzePatternWithCandles(
+        instrumentUid: String,
+        confirmationPrice: BigDecimal? = null
+    ): PatternResult {
         return try {
             val candles = fetchCandles(instrumentUid)
             if (candles.size < 3) {
@@ -98,7 +122,16 @@ class CandlestickPatternStrategy(
             }
 
             val candleKey = "${currentTimeframe.name}:${candles.last().time.seconds}:${candles.last().time.nanos}"
-            val patternResult = detectPatterns(candles).copy(candleKey = candleKey)
+            val patternResult = scorePattern(detectPatterns(candles), candles).copy(candleKey = candleKey)
+
+            if (!isConfirmedByPrice(patternResult, candles.last(), confirmationPrice)) {
+                return PatternResult(
+                    pattern = null,
+                    direction = OrderDirection.HOLD,
+                    confidence = patternResult.confidence,
+                    description = "Паттерн ожидает подтверждения пробоем экстремума свечи"
+                )
+            }
 
             if (patternResult.pattern != null && patternResult.confidence >= minConfidence) {
                 if (loggedPatternKeys.put(instrumentUid, candleKey) != candleKey) {
@@ -130,11 +163,73 @@ class CandlestickPatternStrategy(
         }
     }
 
+    fun backtest(
+        candles: List<HistoricCandle>,
+        holdingCandles: Int = DEFAULT_BACKTEST_HOLDING_CANDLES
+    ): CandlestickBacktestReport {
+        require(holdingCandles > 0) { "Количество свечей удержания должно быть положительным" }
+
+        val returnsByPattern = mutableMapOf<PatternType, MutableList<Double>>()
+        val firstSignalIndex = maxOf(lookbackCandles, 3)
+        for (signalIndex in firstSignalIndex until candles.size - holdingCandles) {
+            val context = candles.take(signalIndex + 1)
+            val result = scorePattern(detectPatterns(context), context)
+            if (result.pattern == null || result.direction == OrderDirection.HOLD || result.confidence < minConfidence) {
+                continue
+            }
+
+            val entryPrice = candleClose(candles[signalIndex])
+            val exitPrice = candleClose(candles[signalIndex + holdingCandles])
+            val returnPercent = calculateBacktestReturn(result.direction, entryPrice, exitPrice)
+            returnsByPattern.getOrPut(result.pattern) { mutableListOf() }.add(returnPercent)
+        }
+
+        val byPattern = returnsByPattern.mapValues { (_, returns) -> returns.toBacktestStats() }
+        val allReturns = returnsByPattern.values.flatten()
+        return CandlestickBacktestReport(
+            timeframe = currentTimeframe,
+            signals = allReturns.size,
+            winRate = allReturns.winRate(),
+            averageReturnPercent = allReturns.averageOrZero(),
+            byPattern = byPattern
+        )
+    }
+
+    private fun calculateBacktestReturn(
+        direction: OrderDirection,
+        entryPrice: BigDecimal,
+        exitPrice: BigDecimal
+    ): Double {
+        if (entryPrice <= BigDecimal.ZERO) return 0.0
+        val multiplier = if (direction == OrderDirection.BUY) BigDecimal.ONE else BigDecimal.ONE.negate()
+        return (exitPrice - entryPrice)
+            .multiply(multiplier)
+            .multiply(BigDecimal(100))
+            .divide(entryPrice, 8, RoundingMode.HALF_UP)
+            .toDouble()
+    }
+
+    private fun List<Double>.toBacktestStats(): PatternBacktestStats = PatternBacktestStats(
+        signals = size,
+        profitableSignals = count { it > 0.0 },
+        winRate = winRate(),
+        averageReturnPercent = averageOrZero()
+    )
+
+    private fun List<Double>.winRate(): Double =
+        if (isEmpty()) 0.0 else count { it > 0.0 } * 100.0 / size
+
+    private fun List<Double>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
+
     /**
      * Получение исторических свечей с текущим интервалом
      */
     private suspend fun fetchCandles(instrumentUid: String): List<HistoricCandle> {
         val now = Instant.now()
+        val cacheKey = "$instrumentUid:${currentTimeframe.name}"
+        candleCache[cacheKey]
+            ?.takeIf { cache -> now.minusSeconds(CANDLE_CACHE_TTL_SECONDS).isBefore(cache.loadedAt) }
+            ?.let { return it.candles }
         val interval = currentTimeframe.interval
         val minutes = currentTimeframe.minutes
 
@@ -142,11 +237,13 @@ class CandlestickPatternStrategy(
         val from = now.minusSeconds((lookbackCandles + 10) * minutes * 60L)
 
         return try {
-            marketDataService.getCandlesSync(instrumentUid, from, now, interval)
+            val candles = marketDataService.getCandlesSync(instrumentUid, from, now, interval)
                 .filter { candle ->
                     val candleStart = Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
                     !candleStart.plusSeconds(minutes * 60L).isAfter(now)
                 }
+            candleCache[cacheKey] = CachedCandles(candles = candles, loadedAt = now)
+            candles
         } catch (e: Exception) {
             logger.error(e) { "Ошибка получения свечей для $instrumentUid (интервал: $minutes мин)" }
             emptyList()
@@ -158,6 +255,7 @@ class CandlestickPatternStrategy(
      */
     fun setTimeframe(timeframe: CandleTimeframe) {
         currentTimeframe = timeframe
+        candleCache.clear()
         logger.info { "🕯️ Таймфрейм свечной стратегии изменён на ${timeframe.name} (${timeframe.minutes} мин)" }
     }
 
@@ -165,6 +263,96 @@ class CandlestickPatternStrategy(
         require(value in 0.70..1.0) { "Минимальная уверенность свечной стратегии должна быть от 0.70 до 1" }
         minConfidence = value
         logger.info { "Минимальная уверенность свечной стратегии изменена на $value" }
+    }
+
+    private fun isConfirmedByPrice(
+        patternResult: PatternResult,
+        signalCandle: HistoricCandle,
+        currentPrice: BigDecimal?
+    ): Boolean = when (patternResult.direction) {
+        OrderDirection.BUY -> currentPrice == null || currentPrice > candleHigh(signalCandle)
+        OrderDirection.SELL -> currentPrice == null || currentPrice < candleLow(signalCandle)
+        OrderDirection.HOLD -> true
+    }
+
+    private fun scorePattern(
+        patternResult: PatternResult,
+        candles: List<HistoricCandle>
+    ): PatternResult {
+        val pattern = patternResult.pattern ?: return patternResult
+        if (pattern in setOf(PatternType.DOJI, PatternType.SPINNING_TOP)) {
+            return patternResult.copy(
+                direction = OrderDirection.HOLD,
+                confidence = minOf(patternResult.confidence, INFORMATIONAL_PATTERN_CONFIDENCE)
+            )
+        }
+
+        val trend = detectTrend(candles, minOf(lookbackCandles, 10))
+        val score = patternResult.confidence + trendAdjustment(pattern, patternResult.direction, trend) +
+            volumeAdjustment(candles) + rangeAdjustment(candles) +
+            supportResistanceAdjustment(patternResult.direction, candles)
+
+        return patternResult.copy(confidence = score.coerceIn(0.0, MAX_PATTERN_CONFIDENCE))
+    }
+
+    private fun trendAdjustment(
+        pattern: PatternType,
+        direction: OrderDirection,
+        trend: OrderDirection
+    ): Double {
+        if (trend == OrderDirection.HOLD) return -0.05
+        val expectedTrend = if (pattern in CONTINUATION_PATTERNS) direction else opposite(direction)
+        return if (trend == expectedTrend) 0.10 else -0.15
+    }
+
+    private fun volumeAdjustment(candles: List<HistoricCandle>): Double {
+        if (candles.size < 6) return 0.0
+        val averageVolume = candles.dropLast(1).takeLast(5).map { it.volume }.average()
+        if (averageVolume <= 0.0) return 0.0
+        return when {
+            candles.last().volume >= averageVolume * 1.2 -> 0.08
+            candles.last().volume < averageVolume * 0.7 -> -0.10
+            else -> 0.0
+        }
+    }
+
+    private fun rangeAdjustment(candles: List<HistoricCandle>): Double {
+        if (candles.size < 6) return 0.0
+        val averageRange = averageRange(candles.dropLast(1).takeLast(5))
+        if (averageRange <= BigDecimal.ZERO) return 0.0
+        return if (candleRange(candles.last()) >= averageRange * BigDecimal("0.6")) 0.05 else -0.10
+    }
+
+    private fun supportResistanceAdjustment(
+        direction: OrderDirection,
+        candles: List<HistoricCandle>
+    ): Double {
+        if (direction == OrderDirection.HOLD || candles.size < 6) return 0.0
+        val context = candles.dropLast(1).takeLast(lookbackCandles)
+        val tolerance = averageRange(context) * BigDecimal("1.5")
+        if (tolerance <= BigDecimal.ZERO) return 0.0
+
+        val close = candleClose(candles.last())
+        val nearestSupport = context.minOf(::candleLow)
+        val nearestResistance = context.maxOf(::candleHigh)
+        return when (direction) {
+            OrderDirection.BUY -> if (close - nearestSupport <= tolerance) 0.05 else 0.0
+            OrderDirection.SELL -> if (nearestResistance - close <= tolerance) 0.05 else 0.0
+            OrderDirection.HOLD -> 0.0
+        }
+    }
+
+    private fun candleRange(candle: HistoricCandle): BigDecimal = candleHigh(candle) - candleLow(candle)
+
+    private fun averageRange(candles: List<HistoricCandle>): BigDecimal {
+        if (candles.isEmpty()) return BigDecimal.ZERO
+        return candles.map(::candleRange).reduce(BigDecimal::add) / candles.size.toBigDecimal()
+    }
+
+    private fun opposite(direction: OrderDirection): OrderDirection = when (direction) {
+        OrderDirection.BUY -> OrderDirection.SELL
+        OrderDirection.SELL -> OrderDirection.BUY
+        OrderDirection.HOLD -> OrderDirection.HOLD
     }
 
     private fun detectPatterns(candles: List<HistoricCandle>): PatternResult {
@@ -257,6 +445,9 @@ class CandlestickPatternStrategy(
         val body = (open - close).abs()
         val upperShadow = (high - maxOf(open, close)).abs()
         val lowerShadow = (minOf(open, close) - low).abs()
+        val range = high - low
+
+        if (range <= BigDecimal.ZERO || body < range * MIN_BODY_TO_RANGE_RATIO) return null
 
         // Молот: длинная нижняя тень (≥ 2× тела), короткая верхняя
         val isHammerShape = lowerShadow >= body * BigDecimal("2") && upperShadow <= body * BigDecimal("0.3")
@@ -379,6 +570,8 @@ class CandlestickPatternStrategy(
         val upperShadow = (high - maxOf(open, close)).abs()
         val lowerShadow = (minOf(open, close) - low).abs()
 
+        if (body <= BigDecimal.ZERO) return null
+
         // Марудзо: тени не более 5% от тела
         val isMarubozu = upperShadow <= body * BigDecimal("0.05") && lowerShadow <= body * BigDecimal("0.05")
 
@@ -477,4 +670,17 @@ class CandlestickPatternStrategy(
 
     private fun candleLow(candle: HistoricCandle): BigDecimal =
         candle.low.units.toBigDecimal() + candle.low.nano.toBigDecimal().divide(BigDecimal("1e9"), 8, RoundingMode.HALF_UP)
+
+    private companion object {
+        const val CANDLE_CACHE_TTL_SECONDS = 5L
+        const val DEFAULT_BACKTEST_HOLDING_CANDLES = 5
+        const val INFORMATIONAL_PATTERN_CONFIDENCE = 0.65
+        const val MAX_PATTERN_CONFIDENCE = 0.95
+        val MIN_BODY_TO_RANGE_RATIO = BigDecimal("0.05")
+        val CONTINUATION_PATTERNS = setOf(
+            PatternType.THREE_WHITE_SOLDIERS,
+            PatternType.THREE_BLACK_CROWS,
+            PatternType.MARUBOZU
+        )
+    }
 }

@@ -97,6 +97,16 @@ class EventPublisherService(
         logger.info { "Опубликовано событие bot.status.changed: $status" }
     }
 
+    fun publishBotHeartbeat(isRunning: Boolean) {
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "BOT_HEARTBEAT",
+                "data" to mapOf("running" to isRunning)
+            )
+        )
+        rabbitTemplate.convertAndSend("trade.events", "bot.heartbeat", message)
+    }
+
     fun publishCapitalUsageLimitReached(usagePercent: Double, limitPercent: Double) {
         val message = objectMapper.writeValueAsString(mapOf("eventType" to "CAPITAL_USAGE_LIMIT_REACHED", "data" to mapOf("usagePercent" to usagePercent, "limitPercent" to limitPercent)))
         rabbitTemplate.convertAndSend("trade.events", "capital.usage.limit.reached", message)
