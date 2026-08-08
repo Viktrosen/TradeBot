@@ -1,6 +1,9 @@
 package ru.bolotov.tradebot.domain.model
 
-import jakarta.persistence.*
+import jakarta.persistence.Column
+import jakarta.persistence.Entity
+import jakarta.persistence.Id
+import jakarta.persistence.Table
 import java.time.Instant
 
 @Entity
@@ -29,9 +32,6 @@ class RiskConfigEntity(
 
     @Column(name = "min_order_cash_buffer")
     var minOrderCashBuffer: Long = 100L,
-
-    @Column(name = "allow_min_position_size_upscale")
-    var allowMinPositionSizeUpscale: Boolean = false,
 
     @Column(name = "updated_at")
     var updatedAt: Instant = Instant.now()

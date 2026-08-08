@@ -10,110 +10,153 @@ class PositionSizingConfig(
     private val persistenceService: RiskConfigPersistenceService
 ) {
 
-    private val _riskPerTrade = AtomicReference(0.02)
-    private val _maxCapitalUsage = AtomicReference(0.80)
-    private val _maxPositionSize = AtomicReference(100_000L)
-    private val _minPositionSize = AtomicReference(5_000L)
-    private val _maxPositions = AtomicReference(10)
-    private val _brokerLimitUsage = AtomicReference(0.95)
-    private val _minOrderCashBuffer = AtomicReference(100L)
-    private val _allowMinPositionSizeUpscale = AtomicReference(false)
+    private val settingsValue = AtomicReference(RiskSettings.defaults())
 
     var riskPerTrade: Double
-        get() = _riskPerTrade.get()
-        set(value) {
-            require(value in 0.001..0.10) { "Риск на сделку должен быть от 0.1% до 10%" }
-            _riskPerTrade.set(value)
-        }
+        get() = settingsValue.get().riskPerTrade
+        set(value) = update(riskPerTrade = value)
 
     var maxCapitalUsage: Double
-        get() = _maxCapitalUsage.get()
-        set(value) {
-            require(value in 0.10..0.95) { "Загрузка капитала должна быть от 10% до 95%" }
-            _maxCapitalUsage.set(value)
-        }
+        get() = settingsValue.get().maxCapitalUsage
+        set(value) = update(maxCapitalUsage = value)
 
     var maxPositionSize: Long
-        get() = _maxPositionSize.get()
-        set(value) {
-            require(value in 1_000..1_000_000) { "Макс. размер позиции от 1 000 до 1 000 000 ₽" }
-            _maxPositionSize.set(value)
-        }
+        get() = settingsValue.get().maxPositionSize
+        set(value) = update(maxPositionSize = value)
 
     var minPositionSize: Long
-        get() = _minPositionSize.get()
-        set(value) {
-            require(value in 100..100_000) { "Мин. размер позиции от 100 до 100 000 ₽" }
-            require(value <= maxPositionSize) { "Мин. размер не может быть больше макс." }
-            _minPositionSize.set(value)
-        }
+        get() = settingsValue.get().minPositionSize
+        set(value) = update(minPositionSize = value)
 
     var maxPositions: Int
-        get() = _maxPositions.get()
-        set(value) {
-            require(value in 1..50) { "Количество позиций от 1 до 50" }
-            _maxPositions.set(value)
-        }
+        get() = settingsValue.get().maxPositions
+        set(value) = update(maxPositions = value)
 
     var brokerLimitUsage: Double
-        get() = _brokerLimitUsage.get()
-        set(value) {
-            require(value in 0.10..1.00) { "Broker limit usage must be between 10% and 100%" }
-            _brokerLimitUsage.set(value)
-        }
+        get() = settingsValue.get().brokerLimitUsage
+        set(value) = update(brokerLimitUsage = value)
 
     var minOrderCashBuffer: Long
-        get() = _minOrderCashBuffer.get()
-        set(value) {
-            require(value in 0..100_000) { "Cash buffer must be between 0 and 100 000" }
-            _minOrderCashBuffer.set(value)
-        }
-
-    var allowMinPositionSizeUpscale: Boolean
-        get() = _allowMinPositionSizeUpscale.get()
-        set(value) {
-            _allowMinPositionSizeUpscale.set(value)
-        }
+        get() = settingsValue.get().minOrderCashBuffer
+        set(value) = update(minOrderCashBuffer = value)
 
     @PostConstruct
-    fun init() {
-        val saved = persistenceService.loadConfig()
-        if (saved != null) {
-            _riskPerTrade.set(saved.riskPerTrade)
-            _maxCapitalUsage.set(saved.maxCapitalUsage)
-            _maxPositionSize.set(saved.maxPositionSize)
-            _minPositionSize.set(saved.minPositionSize)
-            _maxPositions.set(saved.maxPositions)
-            _brokerLimitUsage.set(saved.brokerLimitUsage)
-            _minOrderCashBuffer.set(saved.minOrderCashBuffer)
-            _allowMinPositionSizeUpscale.set(saved.allowMinPositionSizeUpscale)
+    fun loadPersistedConfig() {
+        persistenceService.loadConfig()?.let { saved ->
+            val maxPositionSize = maxOf(saved.maxPositionSize, saved.minPositionSize)
+            update(
+                riskPerTrade = saved.riskPerTrade,
+                maxCapitalUsage = saved.maxCapitalUsage,
+                maxPositionSize = maxPositionSize,
+                minPositionSize = saved.minPositionSize,
+                maxPositions = saved.maxPositions,
+                brokerLimitUsage = saved.brokerLimitUsage,
+                minOrderCashBuffer = saved.minOrderCashBuffer
+            )
+            if (maxPositionSize != saved.maxPositionSize) {
+                persist()
+            }
         }
+    }
+
+    fun update(
+        riskPerTrade: Double? = null,
+        maxCapitalUsage: Double? = null,
+        maxPositionSize: Long? = null,
+        minPositionSize: Long? = null,
+        maxPositions: Int? = null,
+        brokerLimitUsage: Double? = null,
+        minOrderCashBuffer: Long? = null
+    ) {
+        val current = settingsValue.get()
+        val updated = current.copy(
+            riskPerTrade = riskPerTrade ?: current.riskPerTrade,
+            maxCapitalUsage = maxCapitalUsage ?: current.maxCapitalUsage,
+            maxPositionSize = maxPositionSize ?: current.maxPositionSize,
+            minPositionSize = minPositionSize ?: current.minPositionSize,
+            maxPositions = maxPositions ?: current.maxPositions,
+            brokerLimitUsage = brokerLimitUsage ?: current.brokerLimitUsage,
+            minOrderCashBuffer = minOrderCashBuffer ?: current.minOrderCashBuffer
+        )
+        validate(updated)
+        settingsValue.set(updated)
     }
 
     fun persist() {
+        val settings = settingsValue.get()
         persistenceService.saveConfig(
-            riskPerTrade = riskPerTrade,
-            maxCapitalUsage = maxCapitalUsage,
-            maxPositionSize = maxPositionSize,
-            minPositionSize = minPositionSize,
-            maxPositions = maxPositions,
-            brokerLimitUsage = brokerLimitUsage,
-            minOrderCashBuffer = minOrderCashBuffer,
-            allowMinPositionSizeUpscale = allowMinPositionSizeUpscale
+            riskPerTrade = settings.riskPerTrade,
+            maxCapitalUsage = settings.maxCapitalUsage,
+            maxPositionSize = settings.maxPositionSize,
+            minPositionSize = settings.minPositionSize,
+            maxPositions = settings.maxPositions,
+            brokerLimitUsage = settings.brokerLimitUsage,
+            minOrderCashBuffer = settings.minOrderCashBuffer
         )
     }
 
-    fun toMap(): Map<String, Any> = mapOf(
-        "riskPerTrade" to riskPerTrade,
-        "riskPerTradePercent" to "${"%.1f".format(riskPerTrade * 100)}%",
-        "maxCapitalUsage" to maxCapitalUsage,
-        "maxCapitalUsagePercent" to "${"%.0f".format(maxCapitalUsage * 100)}%",
-        "maxPositionSize" to maxPositionSize,
-        "minPositionSize" to minPositionSize,
-        "maxPositions" to maxPositions,
-        "brokerLimitUsage" to brokerLimitUsage,
-        "brokerLimitUsagePercent" to "${"%.0f".format(brokerLimitUsage * 100)}%",
-        "minOrderCashBuffer" to minOrderCashBuffer,
-        "allowMinPositionSizeUpscale" to allowMinPositionSizeUpscale
-    )
+    fun toMap(): Map<String, Any> {
+        val settings = settingsValue.get()
+        return mapOf(
+            "riskPerTrade" to settings.riskPerTrade,
+            "riskPerTradePercent" to "${"%.1f".format(settings.riskPerTrade * 100)}%",
+            "maxCapitalUsage" to settings.maxCapitalUsage,
+            "maxCapitalUsagePercent" to "${"%.0f".format(settings.maxCapitalUsage * 100)}%",
+            "maxPositionSize" to settings.maxPositionSize,
+            "minPositionSize" to settings.minPositionSize,
+            "maxPositions" to settings.maxPositions,
+            "brokerLimitUsage" to settings.brokerLimitUsage,
+            "brokerLimitUsagePercent" to "${"%.0f".format(settings.brokerLimitUsage * 100)}%",
+            "minOrderCashBuffer" to settings.minOrderCashBuffer
+        )
+    }
+
+    private fun validate(settings: RiskSettings) {
+        require(settings.riskPerTrade in 0.001..0.10) {
+            "Риск на сделку должен быть от 0.1% до 10%"
+        }
+        require(settings.maxCapitalUsage in 0.10..0.95) {
+            "Загрузка капитала должна быть от 10% до 95%"
+        }
+        require(settings.maxPositionSize in 1_000..1_000_000) {
+            "Максимальный размер позиции должен быть от 1 000 до 1 000 000 ₽"
+        }
+        require(settings.minPositionSize in 100..100_000) {
+            "Минимальный размер позиции должен быть от 100 до 100 000 ₽"
+        }
+        require(settings.minPositionSize <= settings.maxPositionSize) {
+            "Минимальный размер позиции не может быть больше максимального"
+        }
+        require(settings.maxPositions in 1..50) {
+            "Количество позиций должно быть от 1 до 50"
+        }
+        require(settings.brokerLimitUsage in 0.10..1.00) {
+            "Использование лимита брокера должно быть от 10% до 100%"
+        }
+        require(settings.minOrderCashBuffer in 0..100_000) {
+            "Резерв денежных средств должен быть от 0 до 100 000 ₽"
+        }
+    }
+
+    private data class RiskSettings(
+        val riskPerTrade: Double,
+        val maxCapitalUsage: Double,
+        val maxPositionSize: Long,
+        val minPositionSize: Long,
+        val maxPositions: Int,
+        val brokerLimitUsage: Double,
+        val minOrderCashBuffer: Long
+    ) {
+        companion object {
+            fun defaults() = RiskSettings(
+                riskPerTrade = 0.02,
+                maxCapitalUsage = 0.80,
+                maxPositionSize = 100_000L,
+                minPositionSize = 5_000L,
+                maxPositions = 10,
+                brokerLimitUsage = 0.95,
+                minOrderCashBuffer = 100L
+            )
+        }
+    }
 }

@@ -275,56 +275,22 @@ class InternalCommandController(
     @PostMapping("/risk/update")
     fun updateRiskConfig(@RequestBody request: RiskConfigRequest): ResponseEntity<Map<String, Any?>> {
         return try {
-            val updates = mutableListOf<String>()
-
-            request.riskPerTrade?.let {
-                config.riskPerTrade = it
-                updates.add("riskPerTrade = ${"%.1f".format(it * 100)}%")
-            }
-
-            request.maxCapitalUsage?.let {
-                config.maxCapitalUsage = it
-                updates.add("maxCapitalUsage = ${"%.0f".format(it * 100)}%")
-            }
-
-            request.maxPositionSize?.let {
-                config.maxPositionSize = it
-                updates.add("maxPositionSize = $it ₽")
-            }
-
-            request.minPositionSize?.let {
-                config.minPositionSize = it
-                updates.add("minPositionSize = $it ₽")
-            }
-
-            request.maxPositions?.let {
-                config.maxPositions = it
-                updates.add("maxPositions = $it")
-            }
-
-            request.brokerLimitUsage?.let {
-                config.brokerLimitUsage = it
-                updates.add("brokerLimitUsage = ${"%.0f".format(it * 100)}%")
-            }
-
-            request.minOrderCashBuffer?.let {
-                config.minOrderCashBuffer = it
-                updates.add("minOrderCashBuffer = $it")
-            }
-
-            request.allowMinPositionSizeUpscale?.let {
-                config.allowMinPositionSizeUpscale = it
-                updates.add("allowMinPositionSizeUpscale = $it")
-            }
-
-            // Принудительно сохраняем в БД после массового обновления
+            config.update(
+                riskPerTrade = request.riskPerTrade,
+                maxCapitalUsage = request.maxCapitalUsage,
+                maxPositionSize = request.maxPositionSize,
+                minPositionSize = request.minPositionSize,
+                maxPositions = request.maxPositions,
+                brokerLimitUsage = request.brokerLimitUsage,
+                minOrderCashBuffer = request.minOrderCashBuffer
+            )
             config.persist()
 
             ResponseEntity.ok(
                 mapOf(
                     "success" to true,
                     "message" to "Параметры риска обновлены",
-                    "updates" to updates,
+                    "updates" to request.updateDescriptions(),
                     "config" to config.toMap()
                 )
             )
@@ -340,15 +306,15 @@ class InternalCommandController(
 
     @PostMapping("/risk/reset")
     fun resetRiskConfig(): ResponseEntity<Map<String, Any>> {
-        config.riskPerTrade = 0.02
-        config.maxCapitalUsage = 0.80
-        config.maxPositionSize = 100_000L
-        config.minPositionSize = 5_000L
-        config.maxPositions = 10
-        config.brokerLimitUsage = 0.95
-        config.minOrderCashBuffer = 100L
-        config.allowMinPositionSizeUpscale = false
-
+        config.update(
+            riskPerTrade = 0.02,
+            maxCapitalUsage = 0.80,
+            maxPositionSize = 100_000L,
+            minPositionSize = 5_000L,
+            maxPositions = 10,
+            brokerLimitUsage = 0.95,
+            minOrderCashBuffer = 100L
+        )
         config.persist()
 
         return ResponseEntity.ok(
@@ -376,6 +342,15 @@ data class RiskConfigRequest(
     val minPositionSize: Long? = null,
     val maxPositions: Int? = null,
     val brokerLimitUsage: Double? = null,
-    val minOrderCashBuffer: Long? = null,
-    val allowMinPositionSizeUpscale: Boolean? = null
+    val minOrderCashBuffer: Long? = null
 )
+
+private fun RiskConfigRequest.updateDescriptions(): List<String> = buildList {
+    riskPerTrade?.let { add("riskPerTrade = ${"%.1f".format(it * 100)}%") }
+    maxCapitalUsage?.let { add("maxCapitalUsage = ${"%.0f".format(it * 100)}%") }
+    maxPositionSize?.let { add("maxPositionSize = $it ₽") }
+    minPositionSize?.let { add("minPositionSize = $it ₽") }
+    maxPositions?.let { add("maxPositions = $it") }
+    brokerLimitUsage?.let { add("brokerLimitUsage = ${"%.0f".format(it * 100)}%") }
+    minOrderCashBuffer?.let { add("minOrderCashBuffer = $it") }
+}
