@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.awaitClose
@@ -257,6 +258,7 @@ class TradingBotService(
         val result = positionLifecycleService.closePosition(currentAccountId, position, "MANUAL_CLOSE")
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - position.instrumentId
+            eventPublisherService.publishPositionsChanged()
         }
         return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
     }
@@ -344,6 +346,7 @@ class TradingBotService(
                     logger.info { "Получена цена для ${lastPrice.instrumentUid}" }
                     enrichMarketData(lastPrice)
                 }
+                .onEach(::publishPositionPriceUpdate)
                 .flatMapLatest { marketData -> buildSignalFlow(marketData) }
                 .catch { error -> logger.error(error) { "Ошибка в стриме цен" } }
                 .collect { signal ->
@@ -491,6 +494,15 @@ class TradingBotService(
         result.closedInstrumentId?.let { instrumentId ->
             _openPositions.value -= instrumentId
         }
+        if (result.openedPosition != null || result.closedInstrumentId != null) {
+            eventPublisherService.publishPositionsChanged()
+        }
+    }
+
+    private fun publishPositionPriceUpdate(marketData: MarketData) {
+        _openPositions.value[marketData.instrumentId]?.let { position ->
+            eventPublisherService.publishPositionPriceUpdated(position, marketData.currentPrice)
+        }
     }
 
     private suspend fun closePositionByRisk(position: OpenPosition) {
@@ -503,6 +515,7 @@ class TradingBotService(
         val result = positionLifecycleService.closePosition(currentAccountId, position, "CLOSE")
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
+            eventPublisherService.publishPositionsChanged()
         }
     }
 

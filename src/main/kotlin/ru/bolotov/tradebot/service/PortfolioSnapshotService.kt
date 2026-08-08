@@ -69,7 +69,11 @@ class PortfolioSnapshotService(
                     positions = positionsJson
                 )
             )
-            eventPublisherService.publishPortfolioChanged()
+            eventPublisherService.publishPortfolioChanged(
+                totalValue = total,
+                availableCash = availableCash,
+                blockedCash = blockedCash
+            )
         } catch (e: Exception) {
             portfolioSnapshotLogger.error(e) { "Ошибка сохранения снимка портфеля" }
         }

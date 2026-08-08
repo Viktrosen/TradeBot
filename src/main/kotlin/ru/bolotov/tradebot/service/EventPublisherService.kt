@@ -5,6 +5,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.TradeEvent
+import java.math.BigDecimal
 
 private val logger = KotlinLogging.logger {}
 
@@ -29,15 +30,60 @@ class EventPublisherService(
         }
     }
 
-    fun publishPortfolioChanged() {
+    fun publishPortfolioChanged(
+        totalValue: BigDecimal? = null,
+        availableCash: BigDecimal? = null,
+        blockedCash: BigDecimal? = null
+    ) {
         val message = objectMapper.writeValueAsString(
             mapOf(
                 "eventType" to "PORTFOLIO_CHANGED",
-                "data" to emptyMap<String, Any>()
+                "data" to mapOf(
+                    "totalValue" to totalValue,
+                    "availableCash" to availableCash,
+                    "blockedCash" to blockedCash
+                ).filterValues { it != null }
             )
         )
         rabbitTemplate.convertAndSend("trade.events", "portfolio.changed", message)
         logger.debug { "Опубликовано событие portfolio.changed" }
+    }
+
+    fun publishPositionPriceUpdated(
+        position: OpenPosition,
+        currentPrice: BigDecimal
+    ) {
+        val positionValue = currentPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
+        val entryValue = position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
+        val unrealizedPnl = positionValue - entryValue
+        val pnlPercent = if (entryValue > BigDecimal.ZERO) {
+            unrealizedPnl * BigDecimal(100) / entryValue
+        } else {
+            BigDecimal.ZERO
+        }
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "POSITION_PRICE_UPDATED",
+                "data" to mapOf(
+                    "positionId" to position.positionId,
+                    "instrumentId" to position.instrumentId,
+                    "currentPrice" to currentPrice,
+                    "unrealizedPnl" to unrealizedPnl,
+                    "pnlPercent" to pnlPercent
+                )
+            )
+        )
+        rabbitTemplate.convertAndSend("trade.events", "position.price.updated", message)
+    }
+
+    fun publishPositionsChanged() {
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "POSITIONS_CHANGED",
+                "data" to emptyMap<String, Any>()
+            )
+        )
+        rabbitTemplate.convertAndSend("trade.events", "positions.changed", message)
     }
 
     fun publishBotStatusChanged(status: String) {
