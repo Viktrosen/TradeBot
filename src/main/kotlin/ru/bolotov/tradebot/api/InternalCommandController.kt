@@ -95,9 +95,9 @@ class InternalCommandController(
         val timeframeName = request["timeframe"] as? String
         val minConfidence = (request["minConfidence"] as? Double) ?: candlestickPatternStrategy.minConfidence
 
-        if (minConfidence !in 0.75..1.0) {
+        if (minConfidence !in 0.70..1.0) {
             return ResponseEntity.badRequest().body(
-                mapOf("success" to false, "error" to "Минимальная уверенность свечной стратегии должна быть от 0.75 до 1")
+                mapOf("success" to false, "error" to "Минимальная уверенность свечной стратегии должна быть от 0.70 до 1")
             )
         }
 

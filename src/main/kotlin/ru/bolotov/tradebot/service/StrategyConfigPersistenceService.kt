@@ -79,7 +79,7 @@ class StrategyConfigPersistenceService(
         val map = objectMapper.readValue<Map<String, Any>>(configJson)
         return LoadedConfig.Candlestick(
             timeframe = map["timeframe"] as? String ?: "M5",
-            minConfidence = (map["minConfidence"] as? Number)?.toDouble() ?: 0.6
+            minConfidence = (map["minConfidence"] as? Number)?.toDouble() ?: 0.70
         )
     }
 

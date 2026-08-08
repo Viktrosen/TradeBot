@@ -36,7 +36,7 @@ class TradingStrategyConfigurationService(
                     val timeframe = runCatching {
                         CandlestickPatternStrategy.CandleTimeframe.valueOf(config.timeframe)
                     }.getOrDefault(CandlestickPatternStrategy.CandleTimeframe.M5)
-                    val minConfidence = config.minConfidence.coerceIn(0.75, 1.0)
+                    val minConfidence = config.minConfidence.coerceIn(0.70, 1.0)
 
                     candlestickPatternStrategy.setTimeframe(timeframe)
                     candlestickPatternStrategy.configureMinConfidence(minConfidence)
@@ -96,4 +96,3 @@ class TradingStrategyConfigurationService(
         }
     }
 }
-

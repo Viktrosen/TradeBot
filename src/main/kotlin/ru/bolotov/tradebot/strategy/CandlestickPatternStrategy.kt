@@ -21,7 +21,7 @@ class CandlestickPatternStrategy(
     override var description = "Стратегия на основе свечных паттернов (Engulfing, Hammer, Doji, Morning/Evening Star и др.)"
 
     // Настройки стратегии
-    var minConfidence: Double = 0.75
+    var minConfidence: Double = 0.70
     var lookbackCandles: Int = 30
     private val loggedPatternKeys = ConcurrentHashMap<String, String>()
 
@@ -162,7 +162,7 @@ class CandlestickPatternStrategy(
     }
 
     fun configureMinConfidence(value: Double) {
-        require(value in 0.75..1.0) { "Минимальная уверенность свечной стратегии должна быть от 0.75 до 1" }
+        require(value in 0.70..1.0) { "Минимальная уверенность свечной стратегии должна быть от 0.70 до 1" }
         minConfidence = value
         logger.info { "Минимальная уверенность свечной стратегии изменена на $value" }
     }
