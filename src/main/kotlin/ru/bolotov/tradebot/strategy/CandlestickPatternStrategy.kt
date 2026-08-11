@@ -76,21 +76,6 @@ class CandlestickPatternStrategy(
         val candleKey: String? = null
     )
 
-    data class PatternBacktestStats(
-        val signals: Int,
-        val profitableSignals: Int,
-        val winRate: Double,
-        val averageReturnPercent: Double
-    )
-
-    data class CandlestickBacktestReport(
-        val timeframe: CandleTimeframe,
-        val signals: Int,
-        val winRate: Double,
-        val averageReturnPercent: Double,
-        val byPattern: Map<PatternType, PatternBacktestStats>
-    )
-
     override fun analyze(data: MarketData): Signal {
         val patternResult = data.candlestickPattern
         if (patternResult == null || patternResult.pattern == null) {
@@ -149,77 +134,6 @@ class CandlestickPatternStrategy(
             PatternResult(null, OrderDirection.HOLD, 0.0, "Ошибка анализа свечных паттернов")
         }
     }
-
-    suspend fun analyzeWithCandles(instrumentUid: String): Signal {
-        val patternResult = analyzePatternWithCandles(instrumentUid)
-        return if (patternResult.pattern != null && patternResult.confidence >= minConfidence) {
-            Signal(
-                direction = patternResult.direction,
-                confidence = patternResult.confidence,
-                reason = patternResult.description
-            )
-        } else {
-            Signal.HOLD
-        }
-    }
-
-    fun backtest(
-        candles: List<HistoricCandle>,
-        holdingCandles: Int = DEFAULT_BACKTEST_HOLDING_CANDLES
-    ): CandlestickBacktestReport {
-        require(holdingCandles > 0) { "Количество свечей удержания должно быть положительным" }
-
-        val returnsByPattern = mutableMapOf<PatternType, MutableList<Double>>()
-        val firstSignalIndex = maxOf(lookbackCandles, 3)
-        for (signalIndex in firstSignalIndex until candles.size - holdingCandles) {
-            val context = candles.take(signalIndex + 1)
-            val result = scorePattern(detectPatterns(context), context)
-            if (result.pattern == null || result.direction == OrderDirection.HOLD || result.confidence < minConfidence) {
-                continue
-            }
-
-            val entryPrice = candleClose(candles[signalIndex])
-            val exitPrice = candleClose(candles[signalIndex + holdingCandles])
-            val returnPercent = calculateBacktestReturn(result.direction, entryPrice, exitPrice)
-            returnsByPattern.getOrPut(result.pattern) { mutableListOf() }.add(returnPercent)
-        }
-
-        val byPattern = returnsByPattern.mapValues { (_, returns) -> returns.toBacktestStats() }
-        val allReturns = returnsByPattern.values.flatten()
-        return CandlestickBacktestReport(
-            timeframe = currentTimeframe,
-            signals = allReturns.size,
-            winRate = allReturns.winRate(),
-            averageReturnPercent = allReturns.averageOrZero(),
-            byPattern = byPattern
-        )
-    }
-
-    private fun calculateBacktestReturn(
-        direction: OrderDirection,
-        entryPrice: BigDecimal,
-        exitPrice: BigDecimal
-    ): Double {
-        if (entryPrice <= BigDecimal.ZERO) return 0.0
-        val multiplier = if (direction == OrderDirection.BUY) BigDecimal.ONE else BigDecimal.ONE.negate()
-        return (exitPrice - entryPrice)
-            .multiply(multiplier)
-            .multiply(BigDecimal(100))
-            .divide(entryPrice, 8, RoundingMode.HALF_UP)
-            .toDouble()
-    }
-
-    private fun List<Double>.toBacktestStats(): PatternBacktestStats = PatternBacktestStats(
-        signals = size,
-        profitableSignals = count { it > 0.0 },
-        winRate = winRate(),
-        averageReturnPercent = averageOrZero()
-    )
-
-    private fun List<Double>.winRate(): Double =
-        if (isEmpty()) 0.0 else count { it > 0.0 } * 100.0 / size
-
-    private fun List<Double>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
 
     /**
      * Получение исторических свечей с текущим интервалом
@@ -654,7 +568,7 @@ class CandlestickPatternStrategy(
             |  • Марудзо (Marubozu)
             |  • Волчок (Spinning Top)
             |
-            |💡 Для анализа требуется вызов analyzeWithCandles()
+            |💡 Анализ выполняется торговым циклом с актуальными свечами
         """.trimMargin()
     }
 
@@ -673,7 +587,6 @@ class CandlestickPatternStrategy(
 
     private companion object {
         const val CANDLE_CACHE_TTL_SECONDS = 5L
-        const val DEFAULT_BACKTEST_HOLDING_CANDLES = 5
         const val INFORMATIONAL_PATTERN_CONFIDENCE = 0.65
         const val MAX_PATTERN_CONFIDENCE = 0.95
         val MIN_BODY_TO_RANGE_RATIO = BigDecimal("0.05")

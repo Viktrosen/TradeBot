@@ -184,10 +184,6 @@ class MarketDataProvider(
             .add(BigDecimal.valueOf(quotation.nano.toLong(), 9))
     }
 
-    private fun calculateEMA(prices: List<BigDecimal>, period: Int): BigDecimal? {
-        return calculateEMASeries(prices, period)?.lastOrNull()
-    }
-
     private fun calculateEMASeries(prices: List<BigDecimal>, period: Int): List<BigDecimal>? {
         if (prices.size < period) return null
 
