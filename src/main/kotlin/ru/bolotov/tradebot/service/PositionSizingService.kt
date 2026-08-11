@@ -42,8 +42,7 @@ class PositionSizingService(
             lotPrice = lotPrice,
             riskPerLot = riskPerLot,
             capitalBudget = capitalBudget,
-            portfolioCapital = portfolioCapital,
-            currentPositionsCount = currentPositions.size
+            portfolioCapital = portfolioCapital
         )
 
         val rejection = rejectionForMinimum(limits, minimumLots)
@@ -139,20 +138,13 @@ class PositionSizingService(
         lotPrice: BigDecimal,
         riskPerLot: BigDecimal,
         capitalBudget: BigDecimal,
-        portfolioCapital: BigDecimal,
-        currentPositionsCount: Int
+        portfolioCapital: BigDecimal
     ): LotLimits {
         val riskAmount = portfolioCapital * config.riskPerTrade.toBigDecimal()
-        val remainingSlots = (config.maxPositions - currentPositionsCount).coerceAtLeast(1)
-        val capitalPerPosition = capitalBudget.divide(
-            remainingSlots.toBigDecimal(),
-            MONEY_SCALE,
-            RoundingMode.DOWN
-        )
 
         return LotLimits(
             riskLots = lotsFor(riskAmount, riskPerLot),
-            capitalLots = lotsFor(capitalPerPosition, lotPrice),
+            capitalLots = lotsFor(capitalBudget, lotPrice),
             maxPositionLots = lotsFor(config.maxPositionSize.toBigDecimal(), lotPrice)
         )
     }
@@ -170,7 +162,8 @@ class PositionSizingService(
         minimumLots: Long
     ): PositionSizingRejection? = when {
         limits.riskLots < minimumLots -> PositionSizingRejection.RISK_LIMIT_EXCEEDED
-        limits.capitalLots < minimumLots -> PositionSizingRejection.CAPITAL_USAGE_LIMIT_EXCEEDED
+        limits.capitalLots < minimumLots ->
+            PositionSizingRejection.INSUFFICIENT_CAPITAL_FOR_MIN_POSITION
         limits.maxPositionLots < minimumLots -> PositionSizingRejection.MAX_POSITION_SIZE_EXCEEDED
         else -> null
     }

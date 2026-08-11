@@ -13,6 +13,9 @@ sealed interface PositionSizingResult {
 enum class PositionSizingRejection(
     val description: String
 ) {
+    INSUFFICIENT_CAPITAL_FOR_MIN_POSITION(
+        "остатка лимита капитала недостаточно для минимальной позиции"
+    ),
     MAX_POSITIONS_REACHED("достигнуто максимальное количество позиций"),
     INVALID_MARKET_DATA("некорректная цена или размер лота"),
     RISK_LIMIT_EXCEEDED("минимальная позиция превышает риск на сделку"),
