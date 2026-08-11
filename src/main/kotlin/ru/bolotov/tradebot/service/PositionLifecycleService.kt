@@ -98,7 +98,6 @@ class PositionLifecycleService(
                     "${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)"
         }
         eventPublisherService.publishTradeExecuted(savedEvent)
-        eventPublisherService.publishPortfolioChanged()
         return position
     }
 
@@ -142,7 +141,6 @@ class PositionLifecycleService(
                     )
                     positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
                     closeEvent?.let(eventPublisherService::publishTradeExecuted)
-                    eventPublisherService.publishPortfolioChanged()
                     return ClosePositionResult(position, closed = true, removeFromState = true)
                 }
 
@@ -218,7 +216,6 @@ class PositionLifecycleService(
                 "Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl RUB"
             }
             closeEvent?.let(eventPublisherService::publishTradeExecuted)
-            eventPublisherService.publishPortfolioChanged()
             return ClosePositionResult(position, closed = true, removeFromState = true)
         } catch (e: Exception) {
             closingPositionIds.remove(position.positionId)

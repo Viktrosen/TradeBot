@@ -258,6 +258,7 @@ class TradingBotService(
         val result = positionLifecycleService.closePosition(currentAccountId, position, "MANUAL_CLOSE")
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - position.instrumentId
+            refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
         return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
@@ -285,7 +286,14 @@ class TradingBotService(
                 chunkSize = emergencyCloseChunkSize,
                 chunkDelayMs = emergencyCloseChunkDelayMs
             )
-            removeClosedPositions(results.mapNotNull { it.position.instrumentId.takeIf { _ -> it.removeFromState } })
+            val closedInstrumentIds = results.mapNotNull { result ->
+                result.position.instrumentId.takeIf { result.removeFromState }
+            }
+            removeClosedPositions(closedInstrumentIds)
+            if (closedInstrumentIds.isNotEmpty()) {
+                refreshPortfolioAfterTrade(currentAccountId)
+                eventPublisherService.publishPositionsChanged()
+            }
             logger.info { "Закрытие всех позиций завершено" }
         } finally {
             isClosingPositions = false
@@ -498,6 +506,7 @@ class TradingBotService(
             _openPositions.value -= instrumentId
         }
         if (result.openedPosition != null || result.closedInstrumentId != null) {
+            refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
     }
@@ -518,8 +527,13 @@ class TradingBotService(
         val result = positionLifecycleService.closePosition(currentAccountId, position, "CLOSE")
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
+            refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
+    }
+
+    private suspend fun refreshPortfolioAfterTrade(accountId: String) {
+        portfolioSnapshotService.takeSnapshot(accountId)
     }
 
     private fun checkStopLossOrTakeProfit(position: OpenPosition, currentPrice: BigDecimal): Boolean {
