@@ -524,7 +524,7 @@ class TradingBotService(
             return
         }
 
-        val result = positionLifecycleService.closePosition(currentAccountId, position, "CLOSE")
+        val result = positionLifecycleService.closePositionWithRetry(currentAccountId, position)
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
             refreshPortfolioAfterTrade(currentAccountId)

@@ -184,11 +184,21 @@ class OrderExecutionService(
         delayMs: Long = 1000L
     ): OrderFillResult {
         var lastState: Any? = null
+        var lastExecutedPrice: BigDecimal? = null
+        var lastExecutedOrderAmount: BigDecimal? = null
+        var lastExecutedCommission: BigDecimal? = null
+        var lastLotsRequested: Long? = null
+        var lastLotsExecuted: Long? = null
 
         repeat(maxAttempts) { attempt ->
             val state = ordersService.getOrderStateSync(accountId, orderId)
             lastState = state
             val status = state.executionReportStatus
+            lastExecutedPrice = moneyValueToBigDecimal(state.averagePositionPrice)
+            lastExecutedOrderAmount = moneyValueToBigDecimal(state.executedOrderPrice)
+            lastExecutedCommission = moneyValueToBigDecimal(state.executedCommission)
+            lastLotsRequested = state.lotsRequested
+            lastLotsExecuted = state.lotsExecuted
 
             if (status == OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL) {
                 return OrderFillResult(
@@ -222,10 +232,24 @@ class OrderExecutionService(
 
         return OrderFillResult(
             filled = false,
+            executedPrice = lastExecutedPrice,
+            executedOrderAmount = lastExecutedOrderAmount,
+            executedCommission = lastExecutedCommission,
+            lotsRequested = lastLotsRequested,
+            lotsExecuted = lastLotsExecuted,
             executionStatus = "TIMEOUT_WAITING_FILL",
             errorMessage = "Order was not filled after $maxAttempts attempts",
             brokerOrderState = lastState?.toString()
         )
+    }
+
+    fun cancelOrder(accountId: String, orderId: String): Boolean = try {
+        ordersService.cancelOrderSync(accountId, orderId)
+        logger.info { "Отменён неисполненный остаток заявки: $orderId" }
+        true
+    } catch (error: Exception) {
+        logger.warn(error) { "Не удалось отменить заявку $orderId" }
+        false
     }
 
     private fun toTinkoffDirection(direction: String): TinkoffOrderDirection =
@@ -303,4 +327,7 @@ data class OrderFillResult(
     val executionStatus: String? = null,
     val errorMessage: String? = null,
     val brokerOrderState: String? = null
-)
+) {
+    val executedLots: Long
+        get() = lotsExecuted ?: 0L
+}

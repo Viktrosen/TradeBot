@@ -73,12 +73,14 @@ class TradeEventService(
         orderResult: OrderResult,
         fill: OrderFillResult,
         entryPrice: BigDecimal,
+        quantity: Long,
         totalValue: BigDecimal
     ) {
         event.brokerOrderId = orderResult.orderId
         event.executionStatus = fill.executionStatus ?: orderResult.executionStatus
         event.brokerOrderState = fill.brokerOrderState
         event.price = entryPrice
+        event.quantity = quantity
         event.totalValue = totalValue
         event.status = EventStatus.PROCESSED
         event.processedAt = Instant.now()

@@ -12,6 +12,7 @@ import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.Signal
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -68,15 +69,36 @@ class PositionLifecycleService(
         }
 
         val fill = waitForOpenFill(accountId, marketData, orderResult)
-        if (fill == null || !fill.filled) {
+        val executedQuantity = fill?.executedLots ?: 0L
+        if (fill == null || executedQuantity == 0L) {
+            orderResult.orderId?.let { orderId ->
+                cancelUnfilledOrder(accountId, orderId, marketData.instrumentName)
+            }
             tradeEventService.markOpenEventFailed(savedEvent, orderResult, fill)
             return null
         }
 
+        if (!fill.filled) {
+            orderResult.orderId?.let { orderId ->
+                cancelUnfilledOrder(accountId, orderId, marketData.instrumentName)
+            }
+            positionLifecycleLogger.warn {
+                "Заявка на открытие ${marketData.instrumentName} исполнена частично: " +
+                    "$executedQuantity из ${positionSize.quantity} лотов"
+            }
+        }
+
         val entryPrice = fill.executedPrice ?: orderResult.executedPrice ?: marketData.currentPrice
         val entryCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
-        val totalValue = entryPrice * positionSize.quantity.toBigDecimal() * marketData.lotSize.toBigDecimal()
-        tradeEventService.markOpenEventProcessed(savedEvent, orderResult, fill, entryPrice, totalValue)
+        val totalValue = entryPrice * executedQuantity.toBigDecimal() * marketData.lotSize.toBigDecimal()
+        tradeEventService.markOpenEventProcessed(
+            event = savedEvent,
+            orderResult = orderResult,
+            fill = fill,
+            entryPrice = entryPrice,
+            quantity = executedQuantity,
+            totalValue = totalValue
+        )
 
         val position = OpenPosition(
             positionId = positionId,
@@ -84,7 +106,7 @@ class PositionLifecycleService(
             instrumentName = marketData.instrumentName,
             direction = direction,
             entryPrice = entryPrice,
-            quantity = positionSize.quantity,
+            quantity = executedQuantity,
             lotSize = marketData.lotSize,
             entryCommission = entryCommission,
             entryTime = Instant.now(),
@@ -94,8 +116,8 @@ class PositionLifecycleService(
 
         positionLifecycleLogger.info {
             "Открыта позиция: $direction ${marketData.instrumentName} " +
-                    "(${positionSize.quantity} лотов, ${"%.0f".format(positionSize.value)} RUB, " +
-                    "${"%.1f".format(positionSize.capitalUsagePercent)}% депозита)"
+                    "($executedQuantity лотов, ${"%.0f".format(totalValue)} RUB, " +
+                    "${"%.1f".format(totalValue * BigDecimal(100) / positionSize.value)}% от рассчитанного размера)"
         }
         eventPublisherService.publishTradeExecuted(savedEvent)
         return position
@@ -114,34 +136,66 @@ class PositionLifecycleService(
         }
 
         var lastError: Exception? = null
+        var remainingQuantity = position.quantity
+        var totalCloseValue = BigDecimal.ZERO
+        var totalCloseCommission = BigDecimal.ZERO
+
         for (attempt in 1..maxRetries) {
             try {
                 positionLifecycleLogger.info {
-                    "Экстренное закрытие ${position.instrumentName}: $closeDirection ${position.quantity} лотов рыночной заявкой"
+                    "Экстренное закрытие ${position.instrumentName}: $closeDirection " +
+                        "$remainingQuantity лотов рыночной заявкой"
                 }
                 val orderResult = orderExecutionService.placeMarketOrder(
                     accountId = accountId,
                     instrumentId = position.instrumentId,
-                    quantity = position.quantity,
+                    quantity = remainingQuantity,
                     direction = closeDirection
                 )
 
                 if (orderResult.success) {
-                    val fill = waitForCloseFill(accountId, position, orderResult)
-                        ?: return ClosePositionResult(position, closed = false, removeFromState = false)
-                    val closePrice = fill.executedPrice ?: orderResult.executedPrice ?: position.entryPrice
-                    val closeCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
-                    val pnl = calculatePnl(position, closePrice, closeCommission)
-                    val closeEvent = tradeEventService.saveCloseEventOnce(
+                    val fill = waitForCloseFill(
+                        accountId = accountId,
                         position = position,
-                        closePrice = closePrice,
-                        pnl = pnl,
-                        reason = "EMERGENCY_CLOSE",
-                        explanation = "Экстренное закрытие позиции рыночной заявкой, P&L: $pnl RUB"
+                        orderResult = orderResult,
+                        releaseClosingLock = false
                     )
-                    positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
-                    closeEvent?.let(eventPublisherService::publishTradeExecuted)
-                    return ClosePositionResult(position, closed = true, removeFromState = true)
+                    if (fill == null) {
+                        lastError = Exception("Рыночная заявка на закрытие не исполнена")
+                        if (attempt < maxRetries) delay(2000L * attempt)
+                        continue
+                    }
+
+                    val executedQuantity = minOf(fill.executedLots, remainingQuantity)
+                    if (executedQuantity == 0L) {
+                        lastError = Exception("Рыночная заявка на закрытие не исполнила ни одного лота")
+                        if (attempt < maxRetries) delay(2000L * attempt)
+                        continue
+                    }
+
+                    accumulateCloseExecution(
+                        position = position,
+                        orderResult = orderResult,
+                        fill = fill,
+                        executedQuantity = executedQuantity,
+                        totalCloseValue = totalCloseValue,
+                        totalCloseCommission = totalCloseCommission
+                    ).also { execution ->
+                        totalCloseValue = execution.totalValue
+                        totalCloseCommission = execution.totalCommission
+                    }
+                    remainingQuantity -= executedQuantity
+
+                    if (remainingQuantity == 0L) {
+                        return finishEmergencyClose(position, totalCloseValue, totalCloseCommission)
+                    }
+
+                    positionLifecycleLogger.warn {
+                        "Экстренное закрытие ${position.instrumentName} исполнено частично: " +
+                            "$executedQuantity лотов, осталось $remainingQuantity"
+                    }
+                    if (attempt < maxRetries) delay(2000L * attempt)
+                    continue
                 }
 
                 lastError = Exception(orderResult.error)
@@ -208,6 +262,9 @@ class PositionLifecycleService(
 
             val fill = waitForCloseFill(accountId, position, orderResult)
                 ?: return ClosePositionResult(position, closed = false, removeFromState = false)
+            if (!fill.filled || fill.executedLots != position.quantity) {
+                return ClosePositionResult(position, closed = false, removeFromState = false)
+            }
             val executedPrice = fill.executedPrice ?: closePrice
             val closeCommission = fill.executedCommission ?: BigDecimal.ZERO
             val pnl = calculatePnl(position, executedPrice, closeCommission)
@@ -258,11 +315,14 @@ class PositionLifecycleService(
     private suspend fun waitForCloseFill(
         accountId: String,
         position: OpenPosition,
-        orderResult: OrderResult
+        orderResult: OrderResult,
+        releaseClosingLock: Boolean = true
     ): OrderFillResult? {
         val orderId = orderResult.orderId
         if (orderId.isNullOrBlank()) {
-            closingPositionIds.remove(position.positionId)
+            if (releaseClosingLock) {
+                closingPositionIds.remove(position.positionId)
+            }
             positionLifecycleLogger.warn {
                 "Нет orderId для закрытия ${position.instrumentName}; CLOSE не сохраняем"
             }
@@ -275,14 +335,58 @@ class PositionLifecycleService(
                 "Заявка на закрытие ${position.instrumentName} пока не исполнена: " +
                         "orderId=$orderId, status=${fill.executionStatus}. CLOSE не сохраняем."
             }
-            if (fill.executionStatus != "TIMEOUT_WAITING_FILL") {
+            orderExecutionService.cancelOrder(accountId, orderId)
+            if (releaseClosingLock) {
                 closingPositionIds.remove(position.positionId)
             }
-            return null
+            return fill
         }
 
-        closingPositionIds.remove(position.positionId)
+        if (releaseClosingLock) {
+            closingPositionIds.remove(position.positionId)
+        }
         return fill
+    }
+
+    private fun accumulateCloseExecution(
+        position: OpenPosition,
+        orderResult: OrderResult,
+        fill: OrderFillResult,
+        executedQuantity: Long,
+        totalCloseValue: BigDecimal,
+        totalCloseCommission: BigDecimal
+    ): CloseExecutionTotals {
+        val closePrice = fill.executedPrice ?: orderResult.executedPrice ?: position.entryPrice
+        val executionValue = closePrice * executedQuantity.toBigDecimal() * position.lotSize.toBigDecimal()
+        val executionCommission = fill.executedCommission ?: orderResult.executedCommission ?: BigDecimal.ZERO
+        return CloseExecutionTotals(
+            totalValue = totalCloseValue + executionValue,
+            totalCommission = totalCloseCommission + executionCommission
+        )
+    }
+
+    private fun finishEmergencyClose(
+        position: OpenPosition,
+        totalCloseValue: BigDecimal,
+        totalCloseCommission: BigDecimal
+    ): ClosePositionResult {
+        val closePrice = totalCloseValue.divide(
+            position.quantity.toBigDecimal() * position.lotSize.toBigDecimal(),
+            8,
+            RoundingMode.HALF_UP
+        )
+        val pnl = calculatePnl(position, closePrice, totalCloseCommission)
+        val closeEvent = tradeEventService.saveCloseEventOnce(
+            position = position,
+            closePrice = closePrice,
+            pnl = pnl,
+            reason = "EMERGENCY_CLOSE",
+            explanation = "Экстренное закрытие позиции рыночной заявкой, P&L: $pnl RUB"
+        )
+        positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
+        closeEvent?.let(eventPublisherService::publishTradeExecuted)
+        closingPositionIds.remove(position.positionId)
+        return ClosePositionResult(position, closed = true, removeFromState = true)
     }
 
     private suspend fun waitForOpenFill(
@@ -308,6 +412,14 @@ class PositionLifecycleService(
         return fill
     }
 
+    private fun cancelUnfilledOrder(accountId: String, orderId: String, instrumentName: String) {
+        if (!orderExecutionService.cancelOrder(accountId, orderId)) {
+            positionLifecycleLogger.error {
+                "Не удалось отменить неисполненный остаток заявки $instrumentName: $orderId"
+            }
+        }
+    }
+
     private fun calculatePnl(
         position: OpenPosition,
         closePrice: BigDecimal,
@@ -329,4 +441,9 @@ data class ClosePositionResult(
     val position: OpenPosition,
     val closed: Boolean,
     val removeFromState: Boolean
+)
+
+private data class CloseExecutionTotals(
+    val totalValue: BigDecimal,
+    val totalCommission: BigDecimal
 )
