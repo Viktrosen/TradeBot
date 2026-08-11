@@ -249,12 +249,12 @@ class InternalCommandController(
     fun closeAllPositions(): ResponseEntity<Map<String, Any>> {
         // Запускаем закрытие в фоне, не блокируя ответ
         CoroutineScope(Dispatchers.IO).launch {
-            tradingBotService.closeAllPositionsAsync()
+            tradingBotService.emergencyStopAndCloseAllPositions()
         }
 
         return ResponseEntity.ok(
             mapOf(
-                "status" to "closing",
+                "status" to "stopping_and_closing",
                 "message" to "Запущен процесс закрытия всех позиций. Статус можно проверить через GET /positions"
             )
         )

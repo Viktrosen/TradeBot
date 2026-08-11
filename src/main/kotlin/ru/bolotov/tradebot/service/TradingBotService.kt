@@ -264,7 +264,12 @@ class TradingBotService(
         return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
     }
 
-    suspend fun closeAllPositionsAsync() {
+    suspend fun emergencyStopAndCloseAllPositions() {
+        stop()
+        closeAllPositions()
+    }
+
+    private suspend fun closeAllPositions() {
         if (isClosingPositions) {
             logger.warn { "Закрытие позиций уже запущено" }
             return
