@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.awaitClose
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.api.ClosedTradeResponse
 import ru.bolotov.tradebot.api.DashboardMetricsResponse
 import ru.bolotov.tradebot.api.DashboardResponse
@@ -61,6 +62,7 @@ class TradingBotService(
     private val positionLifecycleService: PositionLifecycleService,
     private val portfolioSnapshotService: PortfolioSnapshotService,
     private val tradeEventService: TradeEventService,
+    private val positionSizingConfig: PositionSizingConfig,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long
 ) {
     private val _isRunning = MutableStateFlow(false)
@@ -77,8 +79,6 @@ class TradingBotService(
     private var priceStreamJob: Job? = null
     private var schedulerJob: Job? = null
 
-    private val stopLossPercent = 0.02
-    private val takeProfitPercent = 0.03
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
     private val signalDebounceMs = 5000L
@@ -544,12 +544,12 @@ class TradingBotService(
         }.toDouble()
 
         return when {
-            pnlPercent <= -stopLossPercent -> {
+            pnlPercent <= -positionSizingConfig.stopLossPercent -> {
                 logger.warn { "Стоп-лосс для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
                 true
             }
 
-            pnlPercent >= takeProfitPercent -> {
+            pnlPercent >= positionSizingConfig.takeProfitPercent -> {
                 logger.info { "Тейк-профит для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
                 true
             }

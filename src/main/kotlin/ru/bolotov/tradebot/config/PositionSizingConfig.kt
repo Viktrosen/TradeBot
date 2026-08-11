@@ -9,71 +9,59 @@ import java.util.concurrent.atomic.AtomicReference
 class PositionSizingConfig(
     private val persistenceService: RiskConfigPersistenceService
 ) {
-
     private val settingsValue = AtomicReference(RiskSettings.defaults())
 
-    var riskPerTrade: Double
-        get() = settingsValue.get().riskPerTrade
-        set(value) = update(riskPerTrade = value)
+    val positionSizePercent: Double
+        get() = settingsValue.get().positionSizePercent
 
-    var maxCapitalUsage: Double
+    val stopLossPercent: Double
+        get() = settingsValue.get().stopLossPercent
+
+    val takeProfitPercent: Double
+        get() = settingsValue.get().takeProfitPercent
+
+    val maxCapitalUsage: Double
         get() = settingsValue.get().maxCapitalUsage
-        set(value) = update(maxCapitalUsage = value)
 
-    var maxPositionSize: Long
-        get() = settingsValue.get().maxPositionSize
-        set(value) = update(maxPositionSize = value)
-
-    var minPositionSize: Long
-        get() = settingsValue.get().minPositionSize
-        set(value) = update(minPositionSize = value)
-
-    var maxPositions: Int
+    val maxPositions: Int
         get() = settingsValue.get().maxPositions
-        set(value) = update(maxPositions = value)
 
-    var brokerLimitUsage: Double
+    val brokerLimitUsage: Double
         get() = settingsValue.get().brokerLimitUsage
-        set(value) = update(brokerLimitUsage = value)
 
-    var minOrderCashBuffer: Long
+    val minOrderCashBuffer: Long
         get() = settingsValue.get().minOrderCashBuffer
-        set(value) = update(minOrderCashBuffer = value)
 
     @PostConstruct
     fun loadPersistedConfig() {
         persistenceService.loadConfig()?.let { saved ->
-            val maxPositionSize = maxOf(saved.maxPositionSize, saved.minPositionSize)
             update(
-                riskPerTrade = saved.riskPerTrade,
+                positionSizePercent = saved.positionSizePercent,
+                stopLossPercent = saved.stopLossPercent,
+                takeProfitPercent = saved.takeProfitPercent,
                 maxCapitalUsage = saved.maxCapitalUsage,
-                maxPositionSize = maxPositionSize,
-                minPositionSize = saved.minPositionSize,
                 maxPositions = saved.maxPositions,
                 brokerLimitUsage = saved.brokerLimitUsage,
                 minOrderCashBuffer = saved.minOrderCashBuffer
             )
-            if (maxPositionSize != saved.maxPositionSize) {
-                persist()
-            }
         }
     }
 
     fun update(
-        riskPerTrade: Double? = null,
+        positionSizePercent: Double? = null,
+        stopLossPercent: Double? = null,
+        takeProfitPercent: Double? = null,
         maxCapitalUsage: Double? = null,
-        maxPositionSize: Long? = null,
-        minPositionSize: Long? = null,
         maxPositions: Int? = null,
         brokerLimitUsage: Double? = null,
         minOrderCashBuffer: Long? = null
     ) {
         val current = settingsValue.get()
         val updated = current.copy(
-            riskPerTrade = riskPerTrade ?: current.riskPerTrade,
+            positionSizePercent = positionSizePercent ?: current.positionSizePercent,
+            stopLossPercent = stopLossPercent ?: current.stopLossPercent,
+            takeProfitPercent = takeProfitPercent ?: current.takeProfitPercent,
             maxCapitalUsage = maxCapitalUsage ?: current.maxCapitalUsage,
-            maxPositionSize = maxPositionSize ?: current.maxPositionSize,
-            minPositionSize = minPositionSize ?: current.minPositionSize,
             maxPositions = maxPositions ?: current.maxPositions,
             brokerLimitUsage = brokerLimitUsage ?: current.brokerLimitUsage,
             minOrderCashBuffer = minOrderCashBuffer ?: current.minOrderCashBuffer
@@ -85,10 +73,10 @@ class PositionSizingConfig(
     fun persist() {
         val settings = settingsValue.get()
         persistenceService.saveConfig(
-            riskPerTrade = settings.riskPerTrade,
+            positionSizePercent = settings.positionSizePercent,
+            stopLossPercent = settings.stopLossPercent,
+            takeProfitPercent = settings.takeProfitPercent,
             maxCapitalUsage = settings.maxCapitalUsage,
-            maxPositionSize = settings.maxPositionSize,
-            minPositionSize = settings.minPositionSize,
             maxPositions = settings.maxPositions,
             brokerLimitUsage = settings.brokerLimitUsage,
             minOrderCashBuffer = settings.minOrderCashBuffer
@@ -98,34 +86,32 @@ class PositionSizingConfig(
     fun toMap(): Map<String, Any> {
         val settings = settingsValue.get()
         return mapOf(
-            "riskPerTrade" to settings.riskPerTrade,
-            "riskPerTradePercent" to "${"%.1f".format(settings.riskPerTrade * 100)}%",
+            "positionSizePercent" to settings.positionSizePercent,
+            "positionSizePercentDisplay" to settings.positionSizePercent.toPercentString(),
+            "stopLossPercent" to settings.stopLossPercent,
+            "stopLossPercentDisplay" to settings.stopLossPercent.toPercentString(),
+            "takeProfitPercent" to settings.takeProfitPercent,
+            "takeProfitPercentDisplay" to settings.takeProfitPercent.toPercentString(),
             "maxCapitalUsage" to settings.maxCapitalUsage,
-            "maxCapitalUsagePercent" to "${"%.0f".format(settings.maxCapitalUsage * 100)}%",
-            "maxPositionSize" to settings.maxPositionSize,
-            "minPositionSize" to settings.minPositionSize,
+            "maxCapitalUsagePercent" to settings.maxCapitalUsage.toPercentString(),
             "maxPositions" to settings.maxPositions,
             "brokerLimitUsage" to settings.brokerLimitUsage,
-            "brokerLimitUsagePercent" to "${"%.0f".format(settings.brokerLimitUsage * 100)}%",
             "minOrderCashBuffer" to settings.minOrderCashBuffer
         )
     }
 
     private fun validate(settings: RiskSettings) {
-        require(settings.riskPerTrade in 0.001..0.10) {
-            "Риск на сделку должен быть от 0.1% до 10%"
+        require(settings.positionSizePercent in 0.01..0.80) {
+            "Размер позиции должен быть от 1% до 80% капитала"
+        }
+        require(settings.stopLossPercent in 0.001..0.50) {
+            "Стоп-лосс должен быть от 0.1% до 50%"
+        }
+        require(settings.takeProfitPercent in 0.001..5.00) {
+            "Тейк-профит должен быть от 0.1% до 500%"
         }
         require(settings.maxCapitalUsage in 0.10..0.95) {
             "Загрузка капитала должна быть от 10% до 95%"
-        }
-        require(settings.maxPositionSize in 1_000..1_000_000) {
-            "Максимальный размер позиции должен быть от 1 000 до 1 000 000 ₽"
-        }
-        require(settings.minPositionSize in 100..100_000) {
-            "Минимальный размер позиции должен быть от 100 до 100 000 ₽"
-        }
-        require(settings.minPositionSize <= settings.maxPositionSize) {
-            "Минимальный размер позиции не может быть больше максимального"
         }
         require(settings.maxPositions in 1..50) {
             "Количество позиций должно быть от 1 до 50"
@@ -138,21 +124,23 @@ class PositionSizingConfig(
         }
     }
 
+    private fun Double.toPercentString(): String = "${"%.0f".format(this * 100)}%"
+
     private data class RiskSettings(
-        val riskPerTrade: Double,
+        val positionSizePercent: Double,
+        val stopLossPercent: Double,
+        val takeProfitPercent: Double,
         val maxCapitalUsage: Double,
-        val maxPositionSize: Long,
-        val minPositionSize: Long,
         val maxPositions: Int,
         val brokerLimitUsage: Double,
         val minOrderCashBuffer: Long
     ) {
         companion object {
             fun defaults() = RiskSettings(
-                riskPerTrade = 0.02,
+                positionSizePercent = 0.05,
+                stopLossPercent = 0.02,
+                takeProfitPercent = 0.03,
                 maxCapitalUsage = 0.80,
-                maxPositionSize = 100_000L,
-                minPositionSize = 5_000L,
                 maxPositions = 10,
                 brokerLimitUsage = 0.95,
                 minOrderCashBuffer = 100L

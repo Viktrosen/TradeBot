@@ -14,7 +14,6 @@ class PositionSizingService(
     private val config: PositionSizingConfig,
     private val eventPublisherService: EventPublisherService
 ) {
-
     fun calculatePositionSize(
         marketData: MarketData,
         portfolioCapital: BigDecimal,
@@ -29,41 +28,23 @@ class PositionSizingService(
             return reject(PositionSizingRejection.INVALID_MARKET_DATA)
         }
 
-        val stopDistance = calculateStopDistance(marketData)
-        val riskPerLot = stopDistance * marketData.lotSize.toBigDecimal()
-        if (riskPerLot <= BigDecimal.ZERO) {
-            return reject(PositionSizingRejection.INVALID_MARKET_DATA)
-        }
-
         val capitalBudget = calculateCapitalBudget(portfolioCapital, currentPositions)
             ?: return rejectCapitalLimit(portfolioCapital, currentPositions)
-        val minimumLots = minimumLotsFor(lotPrice)
-        val limits = calculateLotLimits(
-            lotPrice = lotPrice,
-            riskPerLot = riskPerLot,
-            capitalBudget = capitalBudget,
-            portfolioCapital = portfolioCapital
-        )
+        val positionBudget = portfolioCapital * config.positionSizePercent.toBigDecimal()
+        val allowedBudget = minOf(positionBudget, capitalBudget)
+        val quantity = lotsFor(allowedBudget, lotPrice)
 
-        val rejection = rejectionForMinimum(limits, minimumLots)
-        if (rejection != null) {
-            return reject(rejection)
+        if (quantity == 0L) {
+            return reject(PositionSizingRejection.POSITION_SIZE_TOO_SMALL_FOR_LOT)
         }
 
-        val quantity = minOf(
-            limits.riskLots,
-            limits.capitalLots,
-            limits.maxPositionLots
-        )
         val positionSize = createPositionSize(
             quantity = quantity,
             lotPrice = lotPrice,
             portfolioCapital = portfolioCapital,
-            marketData = marketData,
-            stopDistance = stopDistance
+            marketData = marketData
         )
-
-        logCalculatedPosition(marketData, limits, positionSize)
+        logCalculatedPosition(marketData, positionBudget, capitalBudget, positionSize)
         return PositionSizingResult.Allowed(positionSize)
     }
 
@@ -81,12 +62,11 @@ class PositionSizingService(
         val brokerLots = brokerLotsAvailable(brokerLimits)
         val cashLots = cashLotsAvailable(brokerLimits, lotPrice)
         val finalQuantity = minOf(positionSize.quantity, brokerLots, cashLots)
-        val finalValue = lotPrice * finalQuantity.toBigDecimal()
-
-        if (finalValue < config.minPositionSize.toBigDecimal()) {
+        if (finalQuantity == 0L) {
             return reject(PositionSizingRejection.BROKER_LIMIT_EXCEEDED)
         }
 
+        val finalValue = lotPrice * finalQuantity.toBigDecimal()
         if (finalQuantity < positionSize.quantity) {
             logger.info {
                 "Лимиты брокера уменьшили позицию ${marketData.instrumentName}: " +
@@ -103,18 +83,11 @@ class PositionSizingService(
         )
     }
 
-    private fun calculateStopDistance(marketData: MarketData): BigDecimal {
-        val atr = marketData.atr ?: marketData.currentPrice * DEFAULT_ATR_PERCENT
-        return atr * STOP_LOSS_ATR_MULTIPLIER
-    }
-
     private fun calculateCapitalBudget(
         portfolioCapital: BigDecimal,
         currentPositions: Map<String, OpenPosition>
     ): BigDecimal? {
-        val usedCapital = currentPositions.values.fold(BigDecimal.ZERO) { total, position ->
-            total + position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
-        }
+        val usedCapital = usedCapital(currentPositions)
         val maximumCapital = portfolioCapital * config.maxCapitalUsage.toBigDecimal()
         return (maximumCapital - usedCapital).takeIf { it > BigDecimal.ZERO }
     }
@@ -123,10 +96,7 @@ class PositionSizingService(
         portfolioCapital: BigDecimal,
         currentPositions: Map<String, OpenPosition>
     ): PositionSizingResult.Rejected {
-        val usedCapital = currentPositions.values.fold(BigDecimal.ZERO) { total, position ->
-            total + position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
-        }
-        val usagePercent = capitalUsagePercent(usedCapital, portfolioCapital)
+        val usagePercent = capitalUsagePercent(usedCapital(currentPositions), portfolioCapital)
         eventPublisherService.publishCapitalUsageLimitReached(
             usagePercent,
             config.maxCapitalUsage * PERCENT_MULTIPLIER.toDouble()
@@ -134,56 +104,32 @@ class PositionSizingService(
         return reject(PositionSizingRejection.CAPITAL_USAGE_LIMIT_EXCEEDED)
     }
 
-    private fun calculateLotLimits(
-        lotPrice: BigDecimal,
-        riskPerLot: BigDecimal,
-        capitalBudget: BigDecimal,
-        portfolioCapital: BigDecimal
-    ): LotLimits {
-        val riskAmount = portfolioCapital * config.riskPerTrade.toBigDecimal()
-
-        return LotLimits(
-            riskLots = lotsFor(riskAmount, riskPerLot),
-            capitalLots = lotsFor(capitalBudget, lotPrice),
-            maxPositionLots = lotsFor(config.maxPositionSize.toBigDecimal(), lotPrice)
-        )
-    }
-
-    private fun minimumLotsFor(lotPrice: BigDecimal): Long =
-        config.minPositionSize.toBigDecimal()
-            .divide(lotPrice, LOT_SCALE, RoundingMode.CEILING)
-            .toLong()
-
-    private fun lotsFor(amount: BigDecimal, lotPrice: BigDecimal): Long =
-        amount.divide(lotPrice, LOT_SCALE, RoundingMode.DOWN).toLong()
-
-    private fun rejectionForMinimum(
-        limits: LotLimits,
-        minimumLots: Long
-    ): PositionSizingRejection? = when {
-        limits.riskLots < minimumLots -> PositionSizingRejection.RISK_LIMIT_EXCEEDED
-        limits.capitalLots < minimumLots ->
-            PositionSizingRejection.INSUFFICIENT_CAPITAL_FOR_MIN_POSITION
-        limits.maxPositionLots < minimumLots -> PositionSizingRejection.MAX_POSITION_SIZE_EXCEEDED
-        else -> null
-    }
+    private fun usedCapital(currentPositions: Map<String, OpenPosition>): BigDecimal =
+        currentPositions.values.fold(BigDecimal.ZERO) { total, position ->
+            total + position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
+        }
 
     private fun createPositionSize(
         quantity: Long,
         lotPrice: BigDecimal,
         portfolioCapital: BigDecimal,
-        marketData: MarketData,
-        stopDistance: BigDecimal
+        marketData: MarketData
     ): PositionSize {
         val value = lotPrice * quantity.toBigDecimal()
+        val stopLossPrice = marketData.currentPrice * (
+            BigDecimal.ONE - config.stopLossPercent.toBigDecimal()
+        )
         return PositionSize(
             quantity = quantity,
             value = value,
-            stopLossPrice = marketData.currentPrice - stopDistance,
+            stopLossPrice = stopLossPrice,
             atr = marketData.atr,
             capitalUsagePercent = capitalUsagePercent(value, portfolioCapital)
         )
     }
+
+    private fun lotsFor(amount: BigDecimal, lotPrice: BigDecimal): Long =
+        amount.divide(lotPrice, LOT_SCALE, RoundingMode.DOWN).toLong()
 
     private fun brokerLotsAvailable(brokerLimits: BrokerLotLimits): Long =
         (brokerLimits.maxBuyLots.toBigDecimal() * config.brokerLimitUsage.toBigDecimal())
@@ -211,29 +157,23 @@ class PositionSizingService(
 
     private fun logCalculatedPosition(
         marketData: MarketData,
-        limits: LotLimits,
+        positionBudget: BigDecimal,
+        capitalBudget: BigDecimal,
         positionSize: PositionSize
     ) {
         logger.info {
             "Расчёт позиции ${marketData.instrumentName}: " +
-                "риск=${limits.riskLots}, капитал=${limits.capitalLots}, " +
-                "максимум=${limits.maxPositionLots}, итог=${positionSize.quantity} лотов " +
-                "на ${positionSize.value} ₽"
+                "доля=${config.positionSizePercent * PERCENT_MULTIPLIER.toDouble()}%, " +
+                "бюджет позиции=$positionBudget ₽, " +
+                "остаток лимита=$capitalBudget ₽, " +
+                "итог=${positionSize.quantity} лотов на ${positionSize.value} ₽"
         }
     }
 
     private fun reject(reason: PositionSizingRejection): PositionSizingResult.Rejected =
         PositionSizingResult.Rejected(reason)
 
-    private data class LotLimits(
-        val riskLots: Long,
-        val capitalLots: Long,
-        val maxPositionLots: Long
-    )
-
     private companion object {
-        val DEFAULT_ATR_PERCENT = BigDecimal("0.01")
-        val STOP_LOSS_ATR_MULTIPLIER = BigDecimal("1.5")
         val PERCENT_MULTIPLIER = BigDecimal("100")
         const val LOT_SCALE = 0
         const val MONEY_SCALE = 8

@@ -12,17 +12,17 @@ class RiskConfigEntity(
     @Id
     var id: String = "current",
 
-    @Column(name = "risk_per_trade")
-    var riskPerTrade: Double = 0.02,
+    @Column(name = "position_size_percent")
+    var positionSizePercent: Double = 0.05,
+
+    @Column(name = "stop_loss_percent")
+    var stopLossPercent: Double = 0.02,
+
+    @Column(name = "take_profit_percent")
+    var takeProfitPercent: Double = 0.03,
 
     @Column(name = "max_capital_usage")
     var maxCapitalUsage: Double = 0.80,
-
-    @Column(name = "max_position_size")
-    var maxPositionSize: Long = 100_000L,
-
-    @Column(name = "min_position_size")
-    var minPositionSize: Long = 5_000L,
 
     @Column(name = "max_positions")
     var maxPositions: Int = 10,

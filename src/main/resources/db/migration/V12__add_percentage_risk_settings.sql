@@ -1,0 +1,7 @@
+ALTER TABLE risk_config
+    ADD COLUMN IF NOT EXISTS position_size_percent DOUBLE PRECISION NOT NULL DEFAULT 0.05,
+    ADD COLUMN IF NOT EXISTS stop_loss_percent DOUBLE PRECISION NOT NULL DEFAULT 0.02,
+    ADD COLUMN IF NOT EXISTS take_profit_percent DOUBLE PRECISION NOT NULL DEFAULT 0.03;
+
+UPDATE risk_config
+SET position_size_percent = LEAST(GREATEST(risk_per_trade, 0.01), 0.80);

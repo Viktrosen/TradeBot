@@ -276,10 +276,10 @@ class InternalCommandController(
     fun updateRiskConfig(@RequestBody request: RiskConfigRequest): ResponseEntity<Map<String, Any?>> {
         return try {
             config.update(
-                riskPerTrade = request.riskPerTrade,
+                positionSizePercent = request.positionSizePercent,
+                stopLossPercent = request.stopLossPercent,
+                takeProfitPercent = request.takeProfitPercent,
                 maxCapitalUsage = request.maxCapitalUsage,
-                maxPositionSize = request.maxPositionSize,
-                minPositionSize = request.minPositionSize,
                 maxPositions = request.maxPositions,
                 brokerLimitUsage = request.brokerLimitUsage,
                 minOrderCashBuffer = request.minOrderCashBuffer
@@ -307,10 +307,10 @@ class InternalCommandController(
     @PostMapping("/risk/reset")
     fun resetRiskConfig(): ResponseEntity<Map<String, Any>> {
         config.update(
-            riskPerTrade = 0.02,
+            positionSizePercent = 0.05,
+            stopLossPercent = 0.02,
+            takeProfitPercent = 0.03,
             maxCapitalUsage = 0.80,
-            maxPositionSize = 100_000L,
-            minPositionSize = 5_000L,
             maxPositions = 10,
             brokerLimitUsage = 0.95,
             minOrderCashBuffer = 100L
@@ -336,20 +336,20 @@ data class InstrumentFiltersRequest(
 )
 
 data class RiskConfigRequest(
-    val riskPerTrade: Double? = null,
+    val positionSizePercent: Double? = null,
+    val stopLossPercent: Double? = null,
+    val takeProfitPercent: Double? = null,
     val maxCapitalUsage: Double? = null,
-    val maxPositionSize: Long? = null,
-    val minPositionSize: Long? = null,
     val maxPositions: Int? = null,
     val brokerLimitUsage: Double? = null,
     val minOrderCashBuffer: Long? = null
 )
 
 private fun RiskConfigRequest.updateDescriptions(): List<String> = buildList {
-    riskPerTrade?.let { add("riskPerTrade = ${"%.1f".format(it * 100)}%") }
+    positionSizePercent?.let { add("positionSizePercent = ${"%.0f".format(it * 100)}%") }
+    stopLossPercent?.let { add("stopLossPercent = ${"%.1f".format(it * 100)}%") }
+    takeProfitPercent?.let { add("takeProfitPercent = ${"%.1f".format(it * 100)}%") }
     maxCapitalUsage?.let { add("maxCapitalUsage = ${"%.0f".format(it * 100)}%") }
-    maxPositionSize?.let { add("maxPositionSize = $it ₽") }
-    minPositionSize?.let { add("minPositionSize = $it ₽") }
     maxPositions?.let { add("maxPositions = $it") }
     brokerLimitUsage?.let { add("brokerLimitUsage = ${"%.0f".format(it * 100)}%") }
     minOrderCashBuffer?.let { add("minOrderCashBuffer = $it") }

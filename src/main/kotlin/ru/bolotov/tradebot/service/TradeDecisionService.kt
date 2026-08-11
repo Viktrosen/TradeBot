@@ -138,7 +138,7 @@ class TradeDecisionService(
 
     private suspend fun getPortfolioCapital(accountId: String): BigDecimal =
         try {
-            operationsService.getPortfolioSync(accountId).totalAmountCurrencies?.value
+            operationsService.getPortfolioSync(accountId).totalAmountPortfolio?.value
                 ?: BigDecimal.ZERO
         } catch (error: Exception) {
             tradeDecisionLogger.error(error) { "Не удалось получить стоимость портфеля" }

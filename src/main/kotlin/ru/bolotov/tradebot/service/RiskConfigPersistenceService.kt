@@ -21,10 +21,10 @@ class RiskConfigPersistenceService(
     }
 
     fun saveConfig(
-        riskPerTrade: Double,
+        positionSizePercent: Double,
+        stopLossPercent: Double,
+        takeProfitPercent: Double,
         maxCapitalUsage: Double,
-        maxPositionSize: Long,
-        minPositionSize: Long,
         maxPositions: Int,
         brokerLimitUsage: Double,
         minOrderCashBuffer: Long
@@ -32,10 +32,10 @@ class RiskConfigPersistenceService(
         repository.save(
             RiskConfigEntity(
                 id = CURRENT_CONFIG_ID,
-                riskPerTrade = riskPerTrade,
+                positionSizePercent = positionSizePercent,
+                stopLossPercent = stopLossPercent,
+                takeProfitPercent = takeProfitPercent,
                 maxCapitalUsage = maxCapitalUsage,
-                maxPositionSize = maxPositionSize,
-                minPositionSize = minPositionSize,
                 maxPositions = maxPositions,
                 brokerLimitUsage = brokerLimitUsage,
                 minOrderCashBuffer = minOrderCashBuffer,
