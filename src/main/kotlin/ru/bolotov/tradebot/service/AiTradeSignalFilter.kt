@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
+import org.springframework.web.client.body
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
@@ -74,16 +75,16 @@ class AiTradeSignalFilter(
         strategy: TradingStrategy,
         position: OpenPosition?
     ): AiDecision {
-        val response = restClient.post()
+        val responseBody = restClient.post()
             .uri("/chat/completions")
             .contentType(MediaType.APPLICATION_JSON)
             .header("Authorization", "Bearer $apiKey")
             .body(createRequest(marketData, signal, strategy, position))
             .retrieve()
-            .body(JsonNode::class.java)
+            .body<String>()
             ?: error("OpenRouter вернул пустой ответ")
 
-        return parseDecision(response)
+        return parseDecision(objectMapper.readTree(responseBody))
     }
 
     private fun createRequest(
