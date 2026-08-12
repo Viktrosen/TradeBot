@@ -80,8 +80,9 @@ class AiTradeSignalFilter(
             .contentType(MediaType.APPLICATION_JSON)
             .header("Authorization", "Bearer $apiKey")
             .body(createRequest(marketData, signal, strategy, position))
-            .retrieve()
-            .body<String>()
+            .exchange { _, response ->
+                response.body.bufferedReader().use { reader -> reader.readText() }
+            }
             ?: error("OpenRouter вернул пустой ответ")
 
         return parseDecision(objectMapper.readTree(responseBody))
