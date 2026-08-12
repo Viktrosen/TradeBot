@@ -129,7 +129,12 @@ class PositionLifecycleService(
         return closePositionAtPrice(accountId, position, marketData.currentPrice, reason, marketOrder = false)
     }
 
-    suspend fun closePositionWithRetry(accountId: String, position: OpenPosition, maxRetries: Int = 3): ClosePositionResult {
+    suspend fun closePositionWithRetry(
+        accountId: String,
+        position: OpenPosition,
+        reason: String = "EMERGENCY_CLOSE",
+        maxRetries: Int = 3
+    ): ClosePositionResult {
         val closeDirection = closeDirection(position)
         if (!tryMarkPositionClosing(accountId, position, closeDirection)) {
             return ClosePositionResult(position, closed = false, removeFromState = tradeEventService.hasCloseEvent(position.positionId))
@@ -187,7 +192,12 @@ class PositionLifecycleService(
                     remainingQuantity -= executedQuantity
 
                     if (remainingQuantity == 0L) {
-                        return finishEmergencyClose(position, totalCloseValue, totalCloseCommission)
+                        return finishMarketClose(
+                            position = position,
+                            totalCloseValue = totalCloseValue,
+                            totalCloseCommission = totalCloseCommission,
+                            reason = reason
+                        )
                     }
 
                     positionLifecycleLogger.warn {
@@ -365,10 +375,11 @@ class PositionLifecycleService(
         )
     }
 
-    private fun finishEmergencyClose(
+    private fun finishMarketClose(
         position: OpenPosition,
         totalCloseValue: BigDecimal,
-        totalCloseCommission: BigDecimal
+        totalCloseCommission: BigDecimal,
+        reason: String
     ): ClosePositionResult {
         val closePrice = totalCloseValue.divide(
             position.quantity.toBigDecimal() * position.lotSize.toBigDecimal(),
@@ -380,8 +391,8 @@ class PositionLifecycleService(
             position = position,
             closePrice = closePrice,
             pnl = pnl,
-            reason = "EMERGENCY_CLOSE",
-            explanation = "Экстренное закрытие позиции рыночной заявкой, P&L: $pnl RUB"
+            reason = reason,
+            explanation = "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
         )
         positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
         closeEvent?.let(eventPublisherService::publishTradeExecuted)

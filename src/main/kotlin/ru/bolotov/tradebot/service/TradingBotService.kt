@@ -59,6 +59,7 @@ class TradingBotService(
     private val strategyConfigurationService: TradingStrategyConfigurationService,
     private val brokerPortfolioSyncService: BrokerPortfolioSyncService,
     private val tradeDecisionService: TradeDecisionService,
+    private val aiTradeSignalFilter: AiTradeSignalFilter,
     private val positionLifecycleService: PositionLifecycleService,
     private val portfolioSnapshotService: PortfolioSnapshotService,
     private val tradeEventService: TradeEventService,
@@ -255,7 +256,11 @@ class TradingBotService(
         val position = _openPositions.value.values.firstOrNull { it.positionId == positionId }
             ?: return ManualCloseResult("already_closed", false)
         val currentAccountId = accountId ?: return ManualCloseResult("account_not_selected", false)
-        val result = positionLifecycleService.closePosition(currentAccountId, position, "MANUAL_CLOSE")
+        val result = positionLifecycleService.closePositionWithRetry(
+            accountId = currentAccountId,
+            position = position,
+            reason = "MANUAL_CLOSE"
+        )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - position.instrumentId
             refreshPortfolioAfterTrade(currentAccountId)
@@ -283,6 +288,7 @@ class TradingBotService(
 
         isClosingPositions = true
         try {
+            synchronizePositionsBeforeEmergencyClose(currentAccountId)
             val positions = _openPositions.value.values.toList()
             logger.info { "Начинаем закрытие ${positions.size} позиций" }
             val results = positionLifecycleService.closePositionsInChunks(
@@ -302,6 +308,13 @@ class TradingBotService(
             logger.info { "Закрытие всех позиций завершено" }
         } finally {
             isClosingPositions = false
+        }
+    }
+
+    private suspend fun synchronizePositionsBeforeEmergencyClose(accountId: String) {
+        val brokerPositions = brokerPortfolioSyncService.restorePositions(accountId).positions
+        if (brokerPositions.isNotEmpty()) {
+            _openPositions.value += brokerPositions
         }
     }
 
@@ -364,7 +377,7 @@ class TradingBotService(
                 .catch { error -> logger.error(error) { "Ошибка в стриме цен" } }
                 .collect { signal ->
                     when (signal) {
-                        is BotSignal.Close -> closePositionByRisk(signal.position)
+                        is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason)
                         is BotSignal.Trade -> executeTradeSignal(signal)
                     }
                 }
@@ -432,13 +445,9 @@ class TradingBotService(
 
         val position = _openPositions.value[marketData.instrumentId]
         if (position != null && checkStopLossOrTakeProfit(position, marketData.currentPrice)) {
-            emit(BotSignal.Close(position))
+            emit(BotSignal.Close(position, CloseReason.RISK_LIMIT))
             return@flow
         }
-
-        val now = Instant.now()
-        val lastTime = lastSignalTime[marketData.instrumentId]
-        if (lastTime != null && now.toEpochMilli() - lastTime.toEpochMilli() <= signalDebounceMs) return@flow
 
         val strategy = strategyManager.getCurrentStrategy()
         val signal = strategy.analyze(marketData)
@@ -447,6 +456,16 @@ class TradingBotService(
                     "сигнал=${signal.direction}, уверенность=${signal.confidence}"
         }
 
+        if (signal.direction == OrderDirection.SELL) {
+            val positionToClose = synchronizePositionForSell(marketData) ?: return@flow
+            emit(BotSignal.Close(positionToClose, CloseReason.STRATEGY_SIGNAL))
+            return@flow
+        }
+
+        val now = Instant.now()
+        val lastTime = lastSignalTime[marketData.instrumentId]
+        if (lastTime != null && now.toEpochMilli() - lastTime.toEpochMilli() <= signalDebounceMs) return@flow
+
         if (signal.direction == OrderDirection.HOLD || signal.confidence <= 0.5) {
             logger.debug {
                 "Сигнал отклонён: ${marketData.instrumentName}, причина=${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}"
@@ -454,7 +473,16 @@ class TradingBotService(
             return@flow
         }
 
-        if (canExecuteSignal(marketData, signal)) {
+        if (canExecuteBuySignal(marketData)) {
+            val position = _openPositions.value[marketData.instrumentId]
+            if (!aiTradeSignalFilter.shouldExecute(marketData, signal, strategy, position)) {
+                markSignalProcessed(marketData, now)
+                logger.info {
+                    "Сигнал отклонён AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
+                }
+                return@flow
+            }
+
             logger.info { "Сигнал принят: ${marketData.instrumentName} -> ${signal.direction}" }
             marketData.candlestickPattern?.candleKey?.let { candleKey ->
                 processedCandlestickSignals[marketData.instrumentId] = candleKey
@@ -466,10 +494,14 @@ class TradingBotService(
         }
     }
 
-    private suspend fun canExecuteSignal(
-        marketData: MarketData,
-        signal: ru.bolotov.tradebot.strategy.Signal
-    ): Boolean {
+    private fun markSignalProcessed(marketData: MarketData, time: Instant) {
+        marketData.candlestickPattern?.candleKey?.let { candleKey ->
+            processedCandlestickSignals[marketData.instrumentId] = candleKey
+        }
+        lastSignalTime[marketData.instrumentId] = time
+    }
+
+    private fun canExecuteBuySignal(marketData: MarketData): Boolean {
         val candleKey = marketData.candlestickPattern?.candleKey
         if (candleKey != null && processedCandlestickSignals[marketData.instrumentId] == candleKey) {
             logger.debug {
@@ -478,14 +510,17 @@ class TradingBotService(
             return false
         }
 
-        if (signal.direction != OrderDirection.SELL) return true
+        return true
+    }
+
+    private fun synchronizePositionForSell(marketData: MarketData): OpenPosition? {
         val restoredPosition = brokerPortfolioSyncService.synchronizeLongPositionForSell(
             accountId = accountId,
             marketData = marketData,
             existingPosition = _openPositions.value[marketData.instrumentId]
-        ) ?: return false
+        ) ?: return null
         _openPositions.value += (restoredPosition.instrumentId to restoredPosition)
-        return true
+        return restoredPosition
     }
 
     private suspend fun executeTradeSignal(signal: BotSignal.Trade) {
@@ -522,14 +557,18 @@ class TradingBotService(
         }
     }
 
-    private suspend fun closePositionByRisk(position: OpenPosition) {
+    private suspend fun closePositionImmediately(position: OpenPosition, reason: CloseReason) {
         val currentAccountId = accountId
         if (currentAccountId == null) {
             logger.warn { "Закрытие позиции пропущено: брокерский счёт не выбран" }
             return
         }
 
-        val result = positionLifecycleService.closePositionWithRetry(currentAccountId, position)
+        val result = positionLifecycleService.closePositionWithRetry(
+            accountId = currentAccountId,
+            position = position,
+            reason = reason.eventReason
+        )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
             refreshPortfolioAfterTrade(currentAccountId)
@@ -603,5 +642,13 @@ private sealed class BotSignal {
         val strategyExplanation: String
     ) : BotSignal()
 
-    data class Close(val position: OpenPosition) : BotSignal()
+    data class Close(
+        val position: OpenPosition,
+        val reason: CloseReason
+    ) : BotSignal()
+}
+
+private enum class CloseReason(val eventReason: String) {
+    RISK_LIMIT("RISK_CLOSE"),
+    STRATEGY_SIGNAL("SIGNAL_CLOSE")
 }

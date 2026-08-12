@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "ru.bolotov"
-version = "0.1.1-SNAPSHOT"
+version = "0.1.5-SNAPSHOT"
 description = "TradeBot"
 
 java {
