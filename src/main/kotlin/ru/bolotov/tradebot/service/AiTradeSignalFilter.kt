@@ -36,16 +36,16 @@ class AiTradeSignalFilter(
         }
     }
 
-    fun shouldExecute(
+    fun evaluate(
         marketData: MarketData,
         signal: Signal,
         strategy: TradingStrategy,
         position: OpenPosition?
-    ): Boolean {
-        if (!enabled) return true
+    ): AiFilterResult {
+        if (!enabled) return AiFilterResult(approved = true)
         if (apiKey.isBlank()) {
             aiFilterLogger.error { "AI-фильтр включён, но OPENROUTER_API_KEY не задан; сигнал отклонён" }
-            return false
+            return AiFilterResult(approved = false)
         }
 
         return try {
@@ -54,13 +54,17 @@ class AiTradeSignalFilter(
             val decision = requestDecision(marketData, signal, strategy, position)
             val durationMs = (System.nanoTime() - startedAt) / NANOS_IN_MILLISECOND
             logDecision(marketData, signal, decision, durationMs)
-            decision.action == AiAction.APPROVE
+            AiFilterResult(
+                approved = decision.action == AiAction.APPROVE,
+                explanation = decision.reason,
+                confidence = decision.confidence
+            )
         } catch (error: Exception) {
             aiFilterLogger.warn(error) {
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.message ?: error.javaClass.simpleName}"
             }
-            false
+            AiFilterResult(approved = false)
         }
     }
 
@@ -146,8 +150,20 @@ class AiTradeSignalFilter(
             Ты — консервативный фильтр подтверждения сигналов long-only торгового бота.
             Оценивай только переданные структурированные данные рынка и сигнал стратегии.
             Не выдумывай новости, цены, индикаторы или прочие данные.
-            Одобряй покупку только при достаточном подтверждении сигнала.
-            Одобряй продажу по стратегии только при достаточном подтверждении выхода из позиции.
+
+            Для BUY одобряй вход только при согласованном подтверждении стратегии и индикаторов.
+            Не одобряй покупку при противоречивых индикаторах, недостатке данных, чрезмерно растянутом
+            движении цены или когда сигнал выглядит как попытка догнать уже совершившийся рост.
+
+            Для SELL используй currentPnlPercent и entryPrice из position.
+            Если позиция в прибыли, одобряй продажу при достаточном подтверждении выхода.
+            Если позиция в убытке, одобряй продажу только при сильном и согласованном подтверждении
+            продолжения снижения: паттерн, тренд и доступные индикаторы должны указывать в одну сторону.
+            Учитывай близость текущего убытка к stopLossPrice. При слабых, смешанных или недостаточных
+            признаках продолжения снижения возвращай HOLD, не одобряй преждевременную убыточную продажу.
+            Однако не пытайся любой ценой удерживать убыточную позицию: при убедительном риске дальнейшего
+            падения одобряй SELL. Стоп-лосс остаётся безусловной защитой и к тебе не поступает.
+
             REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
             Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
             Поле reason пиши на русском языке.
@@ -176,6 +192,12 @@ class AiTradeSignalFilter(
         )
     }
 }
+
+data class AiFilterResult(
+    val approved: Boolean,
+    val explanation: String? = null,
+    val confidence: Double? = null
+)
 
 private enum class AiAction {
     APPROVE,

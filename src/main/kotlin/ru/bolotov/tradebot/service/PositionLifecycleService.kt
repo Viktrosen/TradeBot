@@ -133,6 +133,7 @@ class PositionLifecycleService(
         accountId: String,
         position: OpenPosition,
         reason: String = "EMERGENCY_CLOSE",
+        explanation: String? = null,
         maxRetries: Int = 3
     ): ClosePositionResult {
         val closeDirection = closeDirection(position)
@@ -196,7 +197,8 @@ class PositionLifecycleService(
                             position = position,
                             totalCloseValue = totalCloseValue,
                             totalCloseCommission = totalCloseCommission,
-                            reason = reason
+                            reason = reason,
+                            explanation = explanation
                         )
                     }
 
@@ -379,7 +381,8 @@ class PositionLifecycleService(
         position: OpenPosition,
         totalCloseValue: BigDecimal,
         totalCloseCommission: BigDecimal,
-        reason: String
+        reason: String,
+        explanation: String?
     ): ClosePositionResult {
         val closePrice = totalCloseValue.divide(
             position.quantity.toBigDecimal() * position.lotSize.toBigDecimal(),
@@ -392,7 +395,7 @@ class PositionLifecycleService(
             closePrice = closePrice,
             pnl = pnl,
             reason = reason,
-            explanation = "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
+            explanation = explanation ?: "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
         )
         positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
         closeEvent?.let(eventPublisherService::publishTradeExecuted)

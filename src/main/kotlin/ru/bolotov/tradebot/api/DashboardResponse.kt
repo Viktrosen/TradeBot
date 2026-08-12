@@ -19,7 +19,8 @@ data class OpenPositionResponse(
     val quantity: Long,
     val lotSize: Int,
     val entryCommission: BigDecimal,
-    val entryTime: String
+    val entryTime: String,
+    val aiExplanation: String? = null
 )
 
 data class ClosedTradeResponse(
@@ -33,7 +34,8 @@ data class ClosedTradeResponse(
     val quantity: Long,
     val lotSize: Int,
     val realizedPnl: BigDecimal,
-    val closedAt: String
+    val closedAt: String,
+    val aiExplanation: String? = null
 )
 
 data class DashboardMetricsResponse(

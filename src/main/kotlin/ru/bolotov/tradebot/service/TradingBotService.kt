@@ -182,11 +182,17 @@ class TradingBotService(
         )
 
         return positions.map { position ->
-            position.toResponse(currentPrices[position.instrumentId])
+            position.toResponse(
+                currentPrice = currentPrices[position.instrumentId],
+                aiExplanation = tradeEventService.findOpenEvent(position.positionId)?.explanation?.aiExplanation()
+            )
         }
     }
 
-    private fun OpenPosition.toResponse(currentPrice: BigDecimal?): OpenPositionResponse =
+    private fun OpenPosition.toResponse(
+        currentPrice: BigDecimal?,
+        aiExplanation: String?
+    ): OpenPositionResponse =
         OpenPositionResponse(
             positionId = positionId,
             instrumentId = instrumentId,
@@ -200,7 +206,8 @@ class TradingBotService(
             quantity = quantity,
             lotSize = lotSize,
             entryCommission = entryCommission,
-            entryTime = entryTime.toString()
+            entryTime = entryTime.toString(),
+            aiExplanation = aiExplanation
         )
 
     private fun OpenPosition.calculateUnrealizedPnl(currentPrice: BigDecimal): BigDecimal =
@@ -237,7 +244,8 @@ class TradingBotService(
                     quantity = event.quantity,
                     lotSize = event.lotSize,
                     realizedPnl = event.pnl ?: BigDecimal.ZERO,
-                    closedAt = (event.processedAt ?: event.createdAt).toString()
+                    closedAt = (event.processedAt ?: event.createdAt).toString(),
+                    aiExplanation = event.explanation.aiExplanation() ?: openEvent?.explanation?.aiExplanation()
                 )
             },
             metrics = DashboardMetricsResponse(
@@ -403,7 +411,7 @@ class TradingBotService(
             .flatMapLatest { marketData -> buildSignalFlow(marketData) }
             .collect { signal ->
                 when (signal) {
-                    is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason)
+                    is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason, signal.aiResult)
                     is BotSignal.Trade -> executeTradeSignal(signal)
                 }
             }
@@ -486,13 +494,14 @@ class TradingBotService(
 
         if (signal.direction == OrderDirection.SELL) {
             val positionToClose = synchronizePositionForSell(marketData) ?: return@flow
-            if (!aiTradeSignalFilter.shouldExecute(marketData, signal, strategy, positionToClose)) {
+            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, positionToClose)
+            if (!aiResult.approved) {
                 logger.info {
                     "Продажа отклонена AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
                 }
                 return@flow
             }
-            emit(BotSignal.Close(positionToClose, CloseReason.STRATEGY_SIGNAL))
+            emit(BotSignal.Close(positionToClose, CloseReason.STRATEGY_SIGNAL, aiResult))
             return@flow
         }
 
@@ -509,7 +518,8 @@ class TradingBotService(
 
         if (canExecuteBuySignal(marketData)) {
             val position = _openPositions.value[marketData.instrumentId]
-            if (!aiTradeSignalFilter.shouldExecute(marketData, signal, strategy, position)) {
+            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, position)
+            if (!aiResult.approved) {
                 markSignalProcessed(marketData, now)
                 logger.info {
                     "Сигнал отклонён AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
@@ -522,7 +532,15 @@ class TradingBotService(
                 processedCandlestickSignals[marketData.instrumentId] = candleKey
             }
             lastSignalTime[marketData.instrumentId] = now
-            emit(BotSignal.Trade(marketData, signal, strategy.name, strategy.getExplanation(marketData)))
+            emit(
+                BotSignal.Trade(
+                    marketData,
+                    signal,
+                    strategy.name,
+                    strategy.getExplanation(marketData),
+                    aiResult
+                )
+            )
         } else {
             lastSignalTime[marketData.instrumentId] = now
         }
@@ -569,7 +587,7 @@ class TradingBotService(
             marketData = signal.marketData,
             signal = signal.signal,
             strategyName = signal.strategyName,
-            strategyExplanation = signal.strategyExplanation,
+            strategyExplanation = signal.strategyExplanation.withAiExplanation(signal.aiResult),
             currentPositions = _openPositions.value
         )
 
@@ -591,7 +609,11 @@ class TradingBotService(
         }
     }
 
-    private suspend fun closePositionImmediately(position: OpenPosition, reason: CloseReason) {
+    private suspend fun closePositionImmediately(
+        position: OpenPosition,
+        reason: CloseReason,
+        aiResult: AiFilterResult? = null
+    ) {
         val currentAccountId = accountId
         if (currentAccountId == null) {
             logger.warn { "Закрытие позиции пропущено: брокерский счёт не выбран" }
@@ -601,7 +623,8 @@ class TradingBotService(
         val result = positionLifecycleService.closePositionWithRetry(
             accountId = currentAccountId,
             position = position,
-            reason = reason.eventReason
+            reason = reason.eventReason,
+            explanation = aiResult?.toEventExplanation()
         )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
@@ -673,14 +696,26 @@ private sealed class BotSignal {
         val marketData: MarketData,
         val signal: ru.bolotov.tradebot.strategy.Signal,
         val strategyName: String,
-        val strategyExplanation: String
+        val strategyExplanation: String,
+        val aiResult: AiFilterResult
     ) : BotSignal()
 
     data class Close(
         val position: OpenPosition,
-        val reason: CloseReason
+        val reason: CloseReason,
+        val aiResult: AiFilterResult? = null
     ) : BotSignal()
 }
+
+private fun String.withAiExplanation(aiResult: AiFilterResult): String =
+    aiResult.toEventExplanation()?.let { "$this\n$it" } ?: this
+
+private fun AiFilterResult.toEventExplanation(): String? = explanation?.let { reason ->
+    "AI: $reason${confidence?.let { "; уверенность: ${(it * 100).toInt()}%" }.orEmpty()}"
+}
+
+private fun String.aiExplanation(): String? =
+    lineSequence().firstOrNull { it.startsWith("AI: ") }?.removePrefix("AI: ")
 
 private enum class CloseReason(val eventReason: String) {
     RISK_LIMIT("RISK_CLOSE"),
