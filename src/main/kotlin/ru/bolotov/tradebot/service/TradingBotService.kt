@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
@@ -83,6 +82,7 @@ class TradingBotService(
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
     private val signalDebounceMs = 5000L
+    private val streamReconnectDelayMs = 5000L
     private val lastSignalTime = ConcurrentHashMap<String, Instant>()
     private val processedCandlestickSignals = ConcurrentHashMap<String, String>()
     private val isRescanningInstruments = AtomicBoolean(false)
@@ -360,29 +360,57 @@ class TradingBotService(
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun startPriceStream() {
         priceStreamJob = scope.launch {
+            collectPriceStreamWithReconnect()
+        }
+    }
+
+    private suspend fun collectPriceStreamWithReconnect() {
+        while (_isRunning.value) {
             val instruments = _activeInstruments.value
             if (instruments.isEmpty()) {
                 logger.warn { "Нет активных инструментов для подписки" }
-                return@launch
+                return
             }
 
-            logger.info { "Подключение к стриму цен для ${instruments.size} инструментов" }
-            subscribeToLastPrices(instruments)
-                .mapNotNull { lastPrice ->
-                    logger.info { "Получена цена для ${lastPrice.instrumentUid}" }
-                    enrichMarketData(lastPrice)
+            try {
+                collectPriceStream(instruments)
+                if (!shouldReconnectPriceStream()) return
+                logger.warn { "Стрим цен завершился; выполняется переподключение из-за открытых позиций" }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!shouldReconnectPriceStream()) {
+                    logger.error(error) { "Стрим цен завершился; открытых позиций нет, переподключение не требуется" }
+                    return
                 }
-                .onEach(::publishPositionPriceUpdate)
-                .flatMapLatest { marketData -> buildSignalFlow(marketData) }
-                .catch { error -> logger.error(error) { "Ошибка в стриме цен" } }
-                .collect { signal ->
-                    when (signal) {
-                        is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason)
-                        is BotSignal.Trade -> executeTradeSignal(signal)
-                    }
-                }
+                logger.error(error) { "Ошибка стрима цен; будет выполнено переподключение" }
+            }
+
+            logger.info { "Переподключение к стриму цен через ${streamReconnectDelayMs / 1000} сек." }
+            delay(streamReconnectDelayMs)
         }
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun collectPriceStream(instruments: List<String>) {
+        logger.info { "Подключение к стриму цен для ${instruments.size} инструментов" }
+        subscribeToLastPrices(instruments)
+            .mapNotNull { lastPrice ->
+                logger.info { "Получена цена для ${lastPrice.instrumentUid}" }
+                enrichMarketData(lastPrice)
+            }
+            .onEach(::publishPositionPriceUpdate)
+            .flatMapLatest { marketData -> buildSignalFlow(marketData) }
+            .collect { signal ->
+                when (signal) {
+                    is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason)
+                    is BotSignal.Trade -> executeTradeSignal(signal)
+                }
+            }
+    }
+
+    private fun shouldReconnectPriceStream(): Boolean =
+        _isRunning.value && _openPositions.value.isNotEmpty()
 
     private fun subscribeToLastPrices(instrumentUids: List<String>): Flow<LastPrice> = callbackFlow {
         val streamId = "trade_bot_stream_${System.currentTimeMillis()}"
@@ -458,6 +486,12 @@ class TradingBotService(
 
         if (signal.direction == OrderDirection.SELL) {
             val positionToClose = synchronizePositionForSell(marketData) ?: return@flow
+            if (!aiTradeSignalFilter.shouldExecute(marketData, signal, strategy, positionToClose)) {
+                logger.info {
+                    "Продажа отклонена AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
+                }
+                return@flow
+            }
             emit(BotSignal.Close(positionToClose, CloseReason.STRATEGY_SIGNAL))
             return@flow
         }

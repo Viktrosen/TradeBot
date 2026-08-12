@@ -43,8 +43,6 @@ class AiTradeSignalFilter(
         position: OpenPosition?
     ): Boolean {
         if (!enabled) return true
-        if (signal.direction != OrderDirection.BUY) return true
-
         if (apiKey.isBlank()) {
             aiFilterLogger.error { "AI-фильтр включён, но OPENROUTER_API_KEY не задан; сигнал отклонён" }
             return false
@@ -59,7 +57,7 @@ class AiTradeSignalFilter(
             decision.action == AiAction.APPROVE
         } catch (error: Exception) {
             aiFilterLogger.warn(error) {
-                "AI-фильтр: не удалось проверить покупку ${marketData.instrumentName}; " +
+                "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.message ?: error.javaClass.simpleName}"
             }
             false
@@ -121,7 +119,7 @@ class AiTradeSignalFilter(
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
         aiFilterLogger.info {
-            "AI-фильтр: отправлена проверка покупки ${marketData.instrumentName}; " +
+            "AI-фильтр: отправлена проверка ${signal.actionDescription} ${marketData.instrumentName}; " +
                 "стратегия=${strategy.name}, цена=${marketData.currentPrice}, " +
                 "уверенность сигнала=${signal.confidence}"
         }
@@ -145,13 +143,15 @@ class AiTradeSignalFilter(
         const val NANOS_IN_MILLISECOND = 1_000_000L
 
         const val SYSTEM_PROMPT = """
-            You are a conservative confirmation filter for a long-only trading bot.
-            Evaluate only the supplied structured market data and strategy signal.
-            Never invent market data, news, prices, or indicators.
-            APPROVE only when the signal has adequate confirmation.
-            REJECT means the trade should not be executed. HOLD means insufficient evidence.
-            A stop-loss, take-profit, and emergency close never reach you and must not be discussed.
-            Return only JSON matching the provided schema.
+            Ты — консервативный фильтр подтверждения сигналов long-only торгового бота.
+            Оценивай только переданные структурированные данные рынка и сигнал стратегии.
+            Не выдумывай новости, цены, индикаторы или прочие данные.
+            Одобряй покупку только при достаточном подтверждении сигнала.
+            Одобряй продажу по стратегии только при достаточном подтверждении выхода из позиции.
+            REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
+            Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
+            Поле reason пиши на русском языке.
+            Верни только JSON, соответствующий указанной схеме.
         """
 
         val RESPONSE_FORMAT = mapOf(
@@ -195,6 +195,13 @@ private data class AiDecision(
     val confidence: Double,
     val reason: String
 )
+
+private val Signal.actionDescription: String
+    get() = when (direction) {
+        OrderDirection.BUY -> "покупки"
+        OrderDirection.SELL -> "продажи"
+        OrderDirection.HOLD -> "сделки"
+    }
 
 private data class AiTradeContext(
     val strategy: AiStrategyContext,
