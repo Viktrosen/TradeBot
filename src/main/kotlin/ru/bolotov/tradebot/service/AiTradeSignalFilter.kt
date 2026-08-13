@@ -8,7 +8,6 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
-import org.springframework.web.client.body
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
@@ -81,7 +80,13 @@ class AiTradeSignalFilter(
             .header("Authorization", "Bearer $apiKey")
             .body(createRequest(marketData, signal, strategy, position))
             .exchange { _, response ->
-                response.body.bufferedReader().use { reader -> reader.readText() }
+                response.body.bufferedReader().use { reader ->
+                    val responseBody = reader.readText()
+                    if (response.statusCode.isError) {
+                        error("OpenRouter вернул HTTP ${response.statusCode.value()}")
+                    }
+                    responseBody
+                }
             }
             ?: error("OpenRouter вернул пустой ответ")
 
@@ -106,7 +111,7 @@ class AiTradeSignalFilter(
                 )
             )
         ),
-        "response_format" to RESPONSE_FORMAT
+        "response_format" to JSON_OBJECT_RESPONSE_FORMAT
     )
 
     private fun parseDecision(response: JsonNode): AiDecision {
@@ -118,9 +123,20 @@ class AiTradeSignalFilter(
             .takeIf(String::isNotBlank)
             ?: error("Ответ OpenRouter не содержит решения")
 
-        val decision = objectMapper.readValue(content, AiDecision::class.java)
+        val decision = objectMapper.readValue(extractJsonObject(content), AiDecision::class.java)
+            ?: error("Ответ AI не содержит решения")
+        require(decision.reason.isNotBlank()) { "Ответ AI не содержит объяснения" }
         require(decision.confidence in 0.0..1.0) { "Уверенность AI вне диапазона от 0 до 1" }
         return decision
+    }
+
+    private fun extractJsonObject(content: String): String {
+        val startIndex = content.indexOf('{')
+        val endIndex = content.lastIndexOf('}')
+        require(startIndex >= 0 && endIndex > startIndex) {
+            "Ответ AI не содержит завершённый JSON-объект"
+        }
+        return content.substring(startIndex, endIndex + 1)
     }
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
@@ -169,29 +185,12 @@ class AiTradeSignalFilter(
             REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
             Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
             Поле reason пиши на русском языке.
-            Верни только JSON, соответствующий указанной схеме.
+            Всегда возвращай только один валидный JSON-объект без Markdown, пояснений и текста до или после JSON.
+            Ответ обязан начинаться с { и заканчиваться }.
+            Используй ровно этот формат: {"action":"APPROVE","confidence":0.85,"reason":"Краткое объяснение на русском"}.
         """
 
-        val RESPONSE_FORMAT = mapOf(
-            "type" to "json_schema",
-            "json_schema" to mapOf(
-                "name" to "trade_signal_decision",
-                "strict" to true,
-                "schema" to mapOf(
-                    "type" to "object",
-                    "properties" to mapOf(
-                        "action" to mapOf(
-                            "type" to "string",
-                            "enum" to AiAction.entries.map(AiAction::name)
-                        ),
-                        "confidence" to mapOf("type" to "number"),
-                        "reason" to mapOf("type" to "string")
-                    ),
-                    "required" to listOf("action", "confidence", "reason"),
-                    "additionalProperties" to false
-                )
-            )
-        )
+        val JSON_OBJECT_RESPONSE_FORMAT = mapOf("type" to "json_object")
     }
 }
 
