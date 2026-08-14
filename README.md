@@ -114,6 +114,12 @@ flowchart LR
 | `OPENROUTER_API_KEY` | секретный ключ OpenRouter |
 | `OPENROUTER_MODEL` | модель, например `openai/gpt-4o` или `openrouter/free` |
 | `OPENROUTER_TIMEOUT_MS` | таймаут запроса к модели |
+| `AI_MIN_BUY_CONFIDENCE` | минимальная уверенность AI для подтверждения покупки; по умолчанию `0.75` |
+| `AI_MIN_PROFIT_SELL_CONFIDENCE` | минимальная уверенность AI для продажи позиции в прибыли; по умолчанию `0.70` |
+| `AI_MIN_LOSS_SELL_CONFIDENCE` | минимальная уверенность AI для продажи позиции в убытке; по умолчанию `0.85` |
+| `PROFIT_EXIT_MIN_STRATEGY_CONFIDENCE` | минимальная уверенность стратегии для выхода в прибыли; по умолчанию `0.80` |
+| `LOSS_EXIT_MIN_STRATEGY_CONFIDENCE` | минимальная уверенность стратегии для подтверждаемого выхода в убытке; по умолчанию `0.80` |
+| `REENTRY_COOLDOWN_CANDLES` | количество свечей, в течение которых повторный вход после закрытия запрещён; по умолчанию `2` |
 
 Не добавляйте реальные ключи, токены и пароли в `application.properties`, README или Git.
 

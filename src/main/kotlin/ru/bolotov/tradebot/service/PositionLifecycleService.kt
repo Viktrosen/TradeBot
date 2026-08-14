@@ -149,8 +149,8 @@ class PositionLifecycleService(
         for (attempt in 1..maxRetries) {
             try {
                 positionLifecycleLogger.info {
-                    "Экстренное закрытие ${position.instrumentName}: $closeDirection " +
-                        "$remainingQuantity лотов рыночной заявкой"
+                    "Закрытие позиции ${position.instrumentName}: причина=$reason, " +
+                        "$closeDirection $remainingQuantity лотов рыночной заявкой"
                 }
                 val orderResult = orderExecutionService.placeMarketOrder(
                     accountId = accountId,
@@ -203,7 +203,7 @@ class PositionLifecycleService(
                     }
 
                     positionLifecycleLogger.warn {
-                        "Экстренное закрытие ${position.instrumentName} исполнено частично: " +
+                        "Закрытие позиции ${position.instrumentName} исполнено частично: " +
                             "$executedQuantity лотов, осталось $remainingQuantity"
                     }
                     if (attempt < maxRetries) delay(2000L * attempt)

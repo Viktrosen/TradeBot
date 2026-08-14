@@ -22,7 +22,10 @@ class AiTradeSignalFilter(
     private val objectMapper: ObjectMapper,
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
     @Value("\${ai.openrouter.api-key:}") private val apiKey: String,
-    @Value("\${ai.openrouter.model:openai/gpt-4o}") private val model: String
+    @Value("\${ai.openrouter.model:openai/gpt-4o}") private val model: String,
+    @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
+    @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
+    @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
 ) {
 
     init {
@@ -53,12 +56,14 @@ class AiTradeSignalFilter(
             logRequest(marketData, signal, strategy)
             val decision = requestDecision(marketData, signal, strategy, position)
             val durationMs = (System.nanoTime() - startedAt) / NANOS_IN_MILLISECOND
-            logDecision(marketData, signal, decision, durationMs)
-            AiFilterResult(
-                approved = decision.action == AiAction.APPROVE,
+            val requiredConfidence = requiredConfidence(signal, position, marketData.currentPrice)
+            val result = AiFilterResult(
+                approved = decision.action == AiAction.APPROVE && decision.confidence >= requiredConfidence,
                 explanation = decision.reason,
                 confidence = decision.confidence
             )
+            logDecision(marketData, signal, decision, requiredConfidence, result.approved, durationMs)
+            result
         } catch (error: Exception) {
             aiFilterLogger.warn(error) {
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
@@ -151,13 +156,34 @@ class AiTradeSignalFilter(
         marketData: MarketData,
         signal: Signal,
         decision: AiDecision,
+        requiredConfidence: Double,
+        approved: Boolean,
         durationMs: Long
     ) {
         aiFilterLogger.info {
             "AI-фильтр: ${marketData.instrumentName}, сигнал=${signal.direction}, " +
-                "решение=${decision.action.description}, уверенность=${decision.confidence}, " +
+                "решение=${if (approved) "одобрено" else "отклонено"}, " +
+                "ответ=${decision.action.description}, уверенность=${decision.confidence}, " +
+                "минимум=$requiredConfidence, " +
                 "время=${durationMs} мс, причина=${decision.reason}"
         }
+    }
+
+    private fun requiredConfidence(
+        signal: Signal,
+        position: OpenPosition?,
+        currentPrice: BigDecimal
+    ): Double = when (signal.direction) {
+        OrderDirection.BUY -> minBuyConfidence
+        OrderDirection.SELL -> {
+            if (position != null && currentPrice < position.entryPrice) {
+                minLossSellConfidence
+            } else {
+                minProfitSellConfidence
+            }
+        }
+
+        OrderDirection.HOLD -> 1.0
     }
 
     private companion object {

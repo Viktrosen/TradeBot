@@ -114,7 +114,8 @@ class CandlestickPatternStrategy(
                     pattern = null,
                     direction = OrderDirection.HOLD,
                     confidence = patternResult.confidence,
-                    description = "Паттерн ожидает подтверждения пробоем экстремума свечи"
+                    description = "Паттерн ожидает подтверждения пробоем экстремума свечи",
+                    candleKey = candleKey
                 )
             }
 
@@ -127,7 +128,13 @@ class CandlestickPatternStrategy(
                 }
                 patternResult
             } else {
-                PatternResult(null, OrderDirection.HOLD, patternResult.confidence, patternResult.description)
+                PatternResult(
+                    pattern = null,
+                    direction = OrderDirection.HOLD,
+                    confidence = patternResult.confidence,
+                    description = patternResult.description,
+                    candleKey = candleKey
+                )
             }
         } catch (e: Exception) {
             logger.error(e) { "Ошибка анализа свечных паттернов для $instrumentUid" }

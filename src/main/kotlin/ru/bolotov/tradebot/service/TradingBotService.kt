@@ -63,7 +63,12 @@ class TradingBotService(
     private val portfolioSnapshotService: PortfolioSnapshotService,
     private val tradeEventService: TradeEventService,
     private val positionSizingConfig: PositionSizingConfig,
-    @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long
+    @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
+    @Value("\${trading.exit.profit.min-strategy-confidence:0.80}")
+    private val minProfitExitConfidence: Double,
+    @Value("\${trading.exit.loss.min-strategy-confidence:0.80}")
+    private val minLossExitConfidence: Double,
+    @Value("\${trading.reentry-cooldown-candles:2}") private val reentryCooldownCandles: Long
 ) {
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -81,10 +86,10 @@ class TradingBotService(
 
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
-    private val signalDebounceMs = 5000L
     private val streamReconnectDelayMs = 5000L
-    private val lastSignalTime = ConcurrentHashMap<String, Instant>()
-    private val processedCandlestickSignals = ConcurrentHashMap<String, String>()
+    private val processedStrategyCandles = ConcurrentHashMap<String, String>()
+    private val pendingLossExitConfirmations = ConcurrentHashMap<String, String>()
+    private val reentryCooldownUntil = ConcurrentHashMap<String, Instant>()
     private val isRescanningInstruments = AtomicBoolean(false)
     private var isPortfolioRestored = false
     private var isClosingPositions = false
@@ -271,6 +276,7 @@ class TradingBotService(
         )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - position.instrumentId
+            registerReentryCooldown(position.instrumentId)
             refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
@@ -309,6 +315,7 @@ class TradingBotService(
                 result.position.instrumentId.takeIf { result.removeFromState }
             }
             removeClosedPositions(closedInstrumentIds)
+            closedInstrumentIds.forEach(::registerReentryCooldown)
             if (closedInstrumentIds.isNotEmpty()) {
                 refreshPortfolioAfterTrade(currentAccountId)
                 eventPublisherService.publishPositionsChanged()
@@ -411,7 +418,12 @@ class TradingBotService(
             .flatMapLatest { marketData -> buildSignalFlow(marketData) }
             .collect { signal ->
                 when (signal) {
-                    is BotSignal.Close -> closePositionImmediately(signal.position, signal.reason, signal.aiResult)
+                    is BotSignal.Close -> closePositionImmediately(
+                        position = signal.position,
+                        reason = signal.reason,
+                        aiResult = signal.aiResult,
+                        sourceCandleKey = signal.sourceCandleKey
+                    )
                     is BotSignal.Trade -> executeTradeSignal(signal)
                 }
             }
@@ -458,7 +470,6 @@ class TradingBotService(
                     instrumentUid = lastPrice.instrumentUid,
                     confirmationPrice = marketData.currentPrice
                 )
-                    .takeIf { it.pattern != null && it.confidence >= candlestickPatternStrategy.minConfidence }
             } else {
                 null
             }
@@ -485,6 +496,8 @@ class TradingBotService(
             return@flow
         }
 
+        if (!shouldProcessStrategyCandle(marketData)) return@flow
+
         val strategy = strategyManager.getCurrentStrategy()
         val signal = strategy.analyze(marketData)
         logger.info {
@@ -494,6 +507,8 @@ class TradingBotService(
 
         if (signal.direction == OrderDirection.SELL) {
             val positionToClose = synchronizePositionForSell(marketData) ?: return@flow
+            if (!canCloseByStrategy(positionToClose, marketData, signal)) return@flow
+
             val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, positionToClose)
             if (!aiResult.approved) {
                 logger.info {
@@ -501,13 +516,19 @@ class TradingBotService(
                 }
                 return@flow
             }
-            emit(BotSignal.Close(positionToClose, CloseReason.STRATEGY_SIGNAL, aiResult))
+            pendingLossExitConfirmations.remove(positionToClose.instrumentId)
+            emit(
+                BotSignal.Close(
+                    position = positionToClose,
+                    reason = CloseReason.STRATEGY_SIGNAL,
+                    aiResult = aiResult,
+                    sourceCandleKey = marketData.candlestickPattern?.candleKey
+                )
+            )
             return@flow
         }
 
-        val now = Instant.now()
-        val lastTime = lastSignalTime[marketData.instrumentId]
-        if (lastTime != null && now.toEpochMilli() - lastTime.toEpochMilli() <= signalDebounceMs) return@flow
+        position?.let { pendingLossExitConfirmations.remove(it.instrumentId) }
 
         if (signal.direction == OrderDirection.HOLD || signal.confidence <= 0.5) {
             logger.debug {
@@ -517,10 +538,11 @@ class TradingBotService(
         }
 
         if (canExecuteBuySignal(marketData)) {
-            val position = _openPositions.value[marketData.instrumentId]
-            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, position)
+            val currentPosition = _openPositions.value[marketData.instrumentId]
+            if (currentPosition != null) return@flow
+
+            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, currentPosition)
             if (!aiResult.approved) {
-                markSignalProcessed(marketData, now)
                 logger.info {
                     "Сигнал отклонён AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
                 }
@@ -528,10 +550,6 @@ class TradingBotService(
             }
 
             logger.info { "Сигнал принят: ${marketData.instrumentName} -> ${signal.direction}" }
-            marketData.candlestickPattern?.candleKey?.let { candleKey ->
-                processedCandlestickSignals[marketData.instrumentId] = candleKey
-            }
-            lastSignalTime[marketData.instrumentId] = now
             emit(
                 BotSignal.Trade(
                     marketData,
@@ -541,27 +559,72 @@ class TradingBotService(
                     aiResult
                 )
             )
-        } else {
-            lastSignalTime[marketData.instrumentId] = now
         }
-    }
-
-    private fun markSignalProcessed(marketData: MarketData, time: Instant) {
-        marketData.candlestickPattern?.candleKey?.let { candleKey ->
-            processedCandlestickSignals[marketData.instrumentId] = candleKey
-        }
-        lastSignalTime[marketData.instrumentId] = time
     }
 
     private fun canExecuteBuySignal(marketData: MarketData): Boolean {
-        val candleKey = marketData.candlestickPattern?.candleKey
-        if (candleKey != null && processedCandlestickSignals[marketData.instrumentId] == candleKey) {
+        val cooldownEndsAt = reentryCooldownUntil[marketData.instrumentId] ?: return true
+        if (Instant.now().isBefore(cooldownEndsAt)) {
             logger.debug {
-                "Повторный сигнал свечного паттерна для ${marketData.instrumentName} на той же свече пропущен"
+                "Повторный вход для ${marketData.instrumentName} пропущен до $cooldownEndsAt"
+            }
+            return false
+        }
+        reentryCooldownUntil.remove(marketData.instrumentId, cooldownEndsAt)
+        return true
+    }
+
+    private fun shouldProcessStrategyCandle(marketData: MarketData): Boolean {
+        val candleKey = marketData.candlestickPattern?.candleKey ?: return true
+        return processedStrategyCandles.put(marketData.instrumentId, candleKey) != candleKey
+    }
+
+    private fun canCloseByStrategy(
+        position: OpenPosition,
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal
+    ): Boolean {
+        val isProfitable = hasProfitAfterEstimatedCommissions(position, marketData.currentPrice)
+        val requiredConfidence = if (isProfitable) minProfitExitConfidence else minLossExitConfidence
+        if (signal.confidence < requiredConfidence) {
+            logger.info {
+                "Продажа ${marketData.instrumentName} пропущена: уверенность ${signal.confidence} " +
+                    "ниже порога $requiredConfidence"
             }
             return false
         }
 
+        if (isProfitable) return true
+
+        return confirmLossExitOnNextCandle(position, marketData)
+    }
+
+    private fun hasProfitAfterEstimatedCommissions(
+        position: OpenPosition,
+        currentPrice: BigDecimal
+    ): Boolean {
+        val grossPnl = (currentPrice - position.entryPrice) *
+            position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
+        val estimatedTotalCommission = position.entryCommission * BigDecimal(2)
+        return grossPnl > estimatedTotalCommission
+    }
+
+    private fun confirmLossExitOnNextCandle(
+        position: OpenPosition,
+        marketData: MarketData
+    ): Boolean {
+        val candleKey = marketData.candlestickPattern?.candleKey ?: return false
+        val previousCandleKey = pendingLossExitConfirmations.put(position.instrumentId, candleKey)
+        if (previousCandleKey == null) {
+            logger.info {
+                "Продажа ${marketData.instrumentName} в убытке ожидает подтверждения на следующей закрытой свече"
+            }
+            return false
+        }
+
+        logger.info {
+            "Продажа ${marketData.instrumentName} в убытке подтверждена двумя закрытыми свечами"
+        }
         return true
     }
 
@@ -612,7 +675,8 @@ class TradingBotService(
     private suspend fun closePositionImmediately(
         position: OpenPosition,
         reason: CloseReason,
-        aiResult: AiFilterResult? = null
+        aiResult: AiFilterResult? = null,
+        sourceCandleKey: String? = null
     ) {
         val currentAccountId = accountId
         if (currentAccountId == null) {
@@ -628,9 +692,23 @@ class TradingBotService(
         )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
+            registerReentryCooldown(result.position.instrumentId, sourceCandleKey)
             refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
+    }
+
+    private fun registerReentryCooldown(
+        instrumentId: String,
+        sourceCandleKey: String? = null
+    ) {
+        val candleDurationSeconds = candlestickPatternStrategy.currentTimeframe.minutes * 60L
+        val cooldownSeconds = candleDurationSeconds * reentryCooldownCandles.coerceAtLeast(1)
+        val cooldownEndsAt = Instant.now().plusSeconds(cooldownSeconds)
+        reentryCooldownUntil[instrumentId] = cooldownEndsAt
+        pendingLossExitConfirmations.remove(instrumentId)
+        sourceCandleKey?.let { processedStrategyCandles[instrumentId] = it }
+        logger.info { "Повторный вход для $instrumentId заблокирован до $cooldownEndsAt" }
     }
 
     private suspend fun refreshPortfolioAfterTrade(accountId: String) {
@@ -703,7 +781,8 @@ private sealed class BotSignal {
     data class Close(
         val position: OpenPosition,
         val reason: CloseReason,
-        val aiResult: AiFilterResult? = null
+        val aiResult: AiFilterResult? = null,
+        val sourceCandleKey: String? = null
     ) : BotSignal()
 }
 
