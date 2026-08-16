@@ -118,6 +118,7 @@ class MarketDataProvider(
 
     // 🆕 Расчёт ATR (Average True Range)
     private fun calculateATR(candles: List<HistoricCandle>, period: Int = 14): BigDecimal? {
+        if (period <= 0) return null
         if (candles.size < period + 1) return null
 
         val trueRanges = mutableListOf<BigDecimal>()
