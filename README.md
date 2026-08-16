@@ -105,6 +105,32 @@ flowchart LR
 - `/dashboard`;
 - `/risk`, `/risk/update`, `/risk/reset`.
 
+### Активная стратегия
+
+`GET /status` возвращает объект `currentStrategy`, а `GET /strategy/available` — такой же объект в поле `current`. Это единый источник фактической конфигурации активной стратегии для gateway и клиента:
+
+```json
+{
+  "id": "candlestick",
+  "name": "CandlestickPatterns",
+  "description": "Стратегия на основе закрытых свечных паттернов",
+  "type": "candlestick",
+  "settings": {
+    "timeframe": "M15",
+    "minConfidence": 0.85
+  }
+}
+```
+
+Поле `id` совпадает с идентификатором из списка доступных стратегий, а `type` имеет одно из значений: `simple`, `confirmation`, `voting`, `candlestick`. Содержимое `settings` зависит от типа:
+
+- `simple` — пустой объект;
+- `confirmation` — `indicators: ["EMA", "RSI", "MACD", "BB"]`;
+- `voting` — `weights: {"EMA": 3, "RSI": 2, "MACD": 2, "BB": 2}`;
+- `candlestick` — `timeframe` и `minConfidence`.
+
+`StrategyManager` формирует эти сведения из активного экземпляра стратегии: клиент не хранит их как источник истины и поэтому после перезапуска получает текущие значения бота.
+
 ## События RabbitMQ
 
 События публикуются в `trade.events.exchange` и используются gateway для WebSocket-обновлений и push-уведомлений:

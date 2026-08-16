@@ -15,6 +15,8 @@ class ConfirmationStrategy : ConfigurableStrategy {
 
     private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB", "BOLLINGER")
 
+    fun getRequiredIndicators(): List<String> = requiredIndicators.toList()
+
     override fun configure(config: StrategyConfiguration) {
         when (config) {
             is StrategyConfiguration.Confirmation -> {

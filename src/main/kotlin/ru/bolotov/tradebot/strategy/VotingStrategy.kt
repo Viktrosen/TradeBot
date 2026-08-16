@@ -20,6 +20,8 @@ class VotingStrategy(
 
     private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB")
 
+    fun getWeights(): Map<String, Int> = weights.toMap()
+
     override fun configure(config: StrategyConfiguration) {
         when (config) {
             is StrategyConfiguration.Voting -> {

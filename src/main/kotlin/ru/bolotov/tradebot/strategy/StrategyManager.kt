@@ -28,6 +28,34 @@ class StrategyManager(
 
     fun getCurrentStrategy(): TradingStrategy = currentStrategy
 
+    fun getCurrentStrategyId(): String = when (currentStrategy) {
+        crossEmaStrategy -> "ema"
+        rsiStrategy -> "rsi"
+        macdStrategy -> "macd"
+        bbStrategy -> "bb"
+        votingStrategy -> "voting"
+        confirmationStrategy -> "confirmation"
+        candlestickPatternStrategy -> "candlestick"
+        else -> "ema"
+    }
+
+    fun getCurrentStrategyType(): String = when (currentStrategy) {
+        votingStrategy -> "voting"
+        confirmationStrategy -> "confirmation"
+        candlestickPatternStrategy -> "candlestick"
+        else -> "simple"
+    }
+
+    fun getCurrentStrategySettings(): Map<String, Any> = when (currentStrategy) {
+        votingStrategy -> mapOf("weights" to votingStrategy.getWeights())
+        confirmationStrategy -> mapOf("indicators" to confirmationStrategy.getRequiredIndicators())
+        candlestickPatternStrategy -> mapOf(
+            "timeframe" to candlestickPatternStrategy.currentTimeframe.name,
+            "minConfidence" to candlestickPatternStrategy.minConfidence
+        )
+        else -> emptyMap()
+    }
+
     fun isCandlestickStrategyActive(): Boolean =
         currentStrategy === candlestickPatternStrategy
 

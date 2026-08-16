@@ -53,7 +53,7 @@ class InternalCommandController(
         return ResponseEntity.ok(
             mapOf(
                 "running" to tradingBotService.getStatus(),
-                "currentStrategy" to tradingBotService.getCurrentStrategy(),
+                "currentStrategy" to currentStrategyResponse(),
                 "activeInstruments" to tradingBotService.getActiveInstruments()
             )
         )
@@ -160,11 +160,19 @@ class InternalCommandController(
                     mapOf("name" to "voting", "type" to "voting", "description" to "Взвешенное голосование EMA, RSI, MACD, BB"),
                     mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)")
                 ),
-                "current" to mapOf(
-                    "name" to tradingBotService.getCurrentStrategy().name,
-                    "description" to tradingBotService.getCurrentStrategy().description
-                )
+                "current" to currentStrategyResponse()
             )
+        )
+    }
+
+    private fun currentStrategyResponse(): Map<String, Any> {
+        val strategy = tradingBotService.getCurrentStrategy()
+        return mapOf(
+            "id" to strategyManager.getCurrentStrategyId(),
+            "name" to strategy.name,
+            "description" to strategy.description,
+            "type" to strategyManager.getCurrentStrategyType(),
+            "settings" to strategyManager.getCurrentStrategySettings()
         )
     }
 
