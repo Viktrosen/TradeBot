@@ -39,6 +39,7 @@ import ru.tinkoff.piapi.contract.v1.MarketDataResponse
 import ru.tinkoff.piapi.core.InvestApi
 import ru.tinkoff.piapi.core.stream.StreamProcessor
 import java.math.BigDecimal
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -63,7 +64,10 @@ class TradingBotService(
     private val portfolioSnapshotService: PortfolioSnapshotService,
     private val tradeEventService: TradeEventService,
     private val positionSizingConfig: PositionSizingConfig,
+    private val positionProtectionService: PositionProtectionService,
+    private val brokerProtectionReconciliationService: BrokerProtectionReconciliationService,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
+    @Value("\${instrument.rescan.interval-ms:7200000}") private val instrumentRescanIntervalMs: Long,
     @Value("\${trading.exit.profit.min-strategy-confidence:0.80}")
     private val minProfitExitConfidence: Double,
     @Value("\${trading.exit.loss.min-strategy-confidence:0.80}")
@@ -93,6 +97,7 @@ class TradingBotService(
     private val isRescanningInstruments = AtomicBoolean(false)
     private var isPortfolioRestored = false
     private var isClosingPositions = false
+    private var nextInstrumentRescanAt: Instant = Instant.MAX
 
     init {
         runBlocking {
@@ -117,7 +122,9 @@ class TradingBotService(
         _isRunning.value = true
         logger.info { "Запуск торгового бота в реактивном режиме" }
         eventPublisherService.publishBotStatusChanged("RUNNING")
+        nextInstrumentRescanAt = Instant.now().plusMillis(instrumentRescanIntervalMs)
         startPriceStream()
+        startBrokerProtectionReconciliation()
         startScheduler()
     }
 
@@ -125,6 +132,7 @@ class TradingBotService(
         _isRunning.value = false
         priceStreamJob?.cancel()
         schedulerJob?.cancel()
+        brokerProtectionReconciliationService.stop()
         logger.info { "Бот остановлен" }
         eventPublisherService.publishBotStatusChanged("STOPPED")
     }
@@ -279,6 +287,7 @@ class TradingBotService(
             registerReentryCooldown(position.instrumentId)
             refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
+            brokerProtectionReconciliationService.requestReconciliation("ручное закрытие позиции")
         }
         return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
     }
@@ -341,6 +350,20 @@ class TradingBotService(
     fun getStatus(): Boolean = _isRunning.value
     fun getCurrentStrategy(): TradingStrategy = strategyManager.getCurrentStrategy()
 
+    fun replaceActiveBrokerProtection(
+        stopLossPercent: Double,
+        takeProfitPercent: Double
+    ): ProtectionReplacementResult {
+        val selectedAccountId = accountId
+            ?: return ProtectionReplacementResult.Failed("Брокерский счёт не выбран")
+        return positionProtectionService.replaceProtectionForOpenPositions(
+            accountId = selectedAccountId,
+            positions = _openPositions.value.values,
+            stopLossPercent = stopLossPercent,
+            takeProfitPercent = takeProfitPercent
+        )
+    }
+
     private suspend fun selectInitialInstruments() {
         try {
             applySelectedInstruments(instrumentSelectionService.selectByCurrentFilters())
@@ -367,9 +390,38 @@ class TradingBotService(
         }
 
         val result = brokerPortfolioSyncService.restorePositions(accountId)
-        _openPositions.value = result.positions
-        _activeInstruments.value = (_activeInstruments.value + result.instrumentIds).distinct()
+        val persistedOpenPositions = tradeEventService.findUnclosedLongPositions()
+            .associateBy(OpenPosition::instrumentId)
+        _openPositions.value = persistedOpenPositions + result.positions
+        _activeInstruments.value = (
+            _activeInstruments.value +
+                result.instrumentIds +
+                persistedOpenPositions.keys
+            ).distinct()
+        accountId?.let { selectedAccountId ->
+            brokerProtectionReconciliationService.reconcileAtStartup(
+                accountId = selectedAccountId,
+                positions = _openPositions.value.values,
+                onPositionClosed = { position ->
+                    _openPositions.value = _openPositions.value - position.instrumentId
+                    registerReentryCooldown(position.instrumentId)
+                }
+            )
+            positionProtectionService.reconcileProtection(selectedAccountId, _openPositions.value.values)
+        }
         isPortfolioRestored = true
+    }
+
+    private fun startBrokerProtectionReconciliation() {
+        val selectedAccountId = accountId ?: return
+        brokerProtectionReconciliationService.start(
+            accountId = selectedAccountId,
+            positionsProvider = { _openPositions.value.values },
+            onPositionClosed = { position ->
+                _openPositions.value = _openPositions.value - position.instrumentId
+                registerReentryCooldown(position.instrumentId)
+            }
+        )
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -748,7 +800,8 @@ class TradingBotService(
             while (_isRunning.value) {
                 try {
                     portfolioSnapshotService.takeSnapshot(accountId)
-                    delay(loopDelayMs)
+                    rescanInstrumentsWhenDue()
+                    delay(nextSchedulerDelayMs())
                 } catch (e: Exception) {
                     if (e is CancellationException) {
                         logger.debug { "Планировщик остановлен" }
@@ -759,6 +812,26 @@ class TradingBotService(
                 }
             }
         }
+    }
+
+    private suspend fun rescanInstrumentsWhenDue() {
+        if (Instant.now().isBefore(nextInstrumentRescanAt)) return
+
+        try {
+            val instruments = rescanInstruments()
+            logger.info { "Выполнен плановый рескан: выбрано ${instruments.size} инструментов" }
+        } catch (error: Exception) {
+            logger.error(error) { "Не удалось выполнить плановый рескан инструментов" }
+        } finally {
+            nextInstrumentRescanAt = Instant.now().plusMillis(instrumentRescanIntervalMs)
+        }
+    }
+
+    private fun nextSchedulerDelayMs(): Long {
+        val untilRescan = Duration.between(Instant.now(), nextInstrumentRescanAt)
+            .toMillis()
+            .coerceAtLeast(MIN_SCHEDULER_DELAY_MS)
+        return minOf(loopDelayMs, untilRescan)
     }
 
     private fun restartPriceStreamIfRunning() {
@@ -772,6 +845,10 @@ class TradingBotService(
     private fun removeClosedPositions(instrumentIds: List<String>) {
         if (instrumentIds.isEmpty()) return
         _openPositions.value -= instrumentIds.toSet()
+    }
+
+    private companion object {
+        const val MIN_SCHEDULER_DELAY_MS = 1_000L
     }
 }
 

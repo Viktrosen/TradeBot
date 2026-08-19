@@ -56,6 +56,26 @@ class PositionSizingConfig(
         brokerLimitUsage: Double? = null,
         minOrderCashBuffer: Long? = null
     ) {
+        settingsValue.set(preview(
+            positionSizePercent = positionSizePercent,
+            stopLossPercent = stopLossPercent,
+            takeProfitPercent = takeProfitPercent,
+            maxCapitalUsage = maxCapitalUsage,
+            maxPositions = maxPositions,
+            brokerLimitUsage = brokerLimitUsage,
+            minOrderCashBuffer = minOrderCashBuffer
+        ))
+    }
+
+    fun preview(
+        positionSizePercent: Double? = null,
+        stopLossPercent: Double? = null,
+        takeProfitPercent: Double? = null,
+        maxCapitalUsage: Double? = null,
+        maxPositions: Int? = null,
+        brokerLimitUsage: Double? = null,
+        minOrderCashBuffer: Long? = null
+    ): RiskSettings {
         val current = settingsValue.get()
         val updated = current.copy(
             positionSizePercent = positionSizePercent ?: current.positionSizePercent,
@@ -67,7 +87,12 @@ class PositionSizingConfig(
             minOrderCashBuffer = minOrderCashBuffer ?: current.minOrderCashBuffer
         )
         validate(updated)
-        settingsValue.set(updated)
+        return updated
+    }
+
+    fun apply(settings: RiskSettings) {
+        validate(settings)
+        settingsValue.set(settings)
     }
 
     fun persist() {
@@ -126,7 +151,7 @@ class PositionSizingConfig(
 
     private fun Double.toPercentString(): String = "${"%.0f".format(this * 100)}%"
 
-    private data class RiskSettings(
+    data class RiskSettings(
         val positionSizePercent: Double,
         val stopLossPercent: Double,
         val takeProfitPercent: Double,

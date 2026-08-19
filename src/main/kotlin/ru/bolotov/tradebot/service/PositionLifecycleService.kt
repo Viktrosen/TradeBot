@@ -24,7 +24,8 @@ class PositionLifecycleService(
     private val marketDataProvider: MarketDataProvider,
     private val orderExecutionService: OrderExecutionService,
     private val tradeEventService: TradeEventService,
-    private val eventPublisherService: EventPublisherService
+    private val eventPublisherService: EventPublisherService,
+    private val positionProtectionService: PositionProtectionService
 ) {
     private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
 
@@ -119,8 +120,37 @@ class PositionLifecycleService(
                     "($executedQuantity лотов, ${"%.0f".format(totalValue)} RUB, " +
                     "${"%.1f".format(totalValue * BigDecimal(100) / positionSize.value)}% от рассчитанного размера)"
         }
+
         eventPublisherService.publishTradeExecuted(savedEvent)
+        if (!createBrokerProtection(accountId, position)) {
+            return closeUnprotectedPosition(accountId, position)
+        }
         return position
+    }
+
+    private fun createBrokerProtection(accountId: String, position: OpenPosition): Boolean =
+        when (val result = positionProtectionService.createProtection(accountId, position)) {
+            ProtectionCreationResult.Created,
+            ProtectionCreationResult.SkippedInSandbox -> true
+
+            is ProtectionCreationResult.Failed -> {
+                positionLifecycleLogger.error(result.error) {
+                    "Позиция ${position.instrumentName} открыта без защитных заявок"
+                }
+                false
+            }
+        }
+
+    private suspend fun closeUnprotectedPosition(
+        accountId: String,
+        position: OpenPosition
+    ): OpenPosition? {
+        val closeResult = closePositionWithRetry(
+            accountId = accountId,
+            position = position,
+            reason = "PROTECTION_SETUP_FAILED"
+        )
+        return position.takeUnless { closeResult.closed }
     }
 
     suspend fun closePosition(accountId: String, position: OpenPosition, reason: String = "CLOSE"): ClosePositionResult {
@@ -139,6 +169,13 @@ class PositionLifecycleService(
         val closeDirection = closeDirection(position)
         if (!tryMarkPositionClosing(accountId, position, closeDirection)) {
             return ClosePositionResult(position, closed = false, removeFromState = tradeEventService.hasCloseEvent(position.positionId))
+        }
+        if (!positionProtectionService.cancelProtection(accountId, position.positionId, position.instrumentName)) {
+            closingPositionIds.remove(position.positionId)
+            positionLifecycleLogger.warn {
+                "Закрытие ${position.instrumentName} отложено: защитная пара сейчас изменяется или не отменена"
+            }
+            return ClosePositionResult(position, closed = false, removeFromState = false)
         }
 
         var lastError: Exception? = null
@@ -247,6 +284,47 @@ class PositionLifecycleService(
         return results
     }
 
+    fun recordBrokerProtectionClose(
+        accountId: String,
+        position: OpenPosition,
+        triggeredOrderId: String,
+        reason: String,
+        closePrice: BigDecimal,
+        closeCommission: BigDecimal
+    ): ClosePositionResult {
+        if (tradeEventService.hasCloseEvent(position.positionId)) {
+            return ClosePositionResult(position, closed = false, removeFromState = true)
+        }
+        if (!closingPositionIds.add(position.positionId)) {
+            return ClosePositionResult(position, closed = false, removeFromState = false)
+        }
+
+        return try {
+            positionProtectionService.completeTriggeredProtection(
+                accountId = accountId,
+                positionId = position.positionId,
+                triggeredOrderId = triggeredOrderId,
+                instrumentName = position.instrumentName
+            )
+            val pnl = calculatePnl(position, closePrice, closeCommission)
+            val closeEvent = tradeEventService.saveCloseEventOnce(
+                position = position,
+                closePrice = closePrice,
+                pnl = pnl,
+                reason = reason,
+                explanation = closeExplanation(reason, pnl)
+            )
+            closeEvent?.let(eventPublisherService::publishTradeExecuted)
+            positionLifecycleLogger.info {
+                "Защитная заявка брокера исполнилась для ${position.instrumentName}: " +
+                    "причина=$reason, цена=$closePrice, комиссия=$closeCommission, P&L=$pnl"
+            }
+            ClosePositionResult(position, closed = closeEvent != null, removeFromState = true)
+        } finally {
+            closingPositionIds.remove(position.positionId)
+        }
+    }
+
     private suspend fun closePositionAtPrice(
         accountId: String,
         position: OpenPosition,
@@ -257,6 +335,13 @@ class PositionLifecycleService(
         val direction = closeDirection(position)
         if (!tryMarkPositionClosing(accountId, position, direction)) {
             return ClosePositionResult(position, closed = false, removeFromState = tradeEventService.hasCloseEvent(position.positionId))
+        }
+        if (!positionProtectionService.cancelProtection(accountId, position.positionId, position.instrumentName)) {
+            closingPositionIds.remove(position.positionId)
+            positionLifecycleLogger.warn {
+                "Закрытие ${position.instrumentName} отложено: защитная пара сейчас изменяется или не отменена"
+            }
+            return ClosePositionResult(position, closed = false, removeFromState = false)
         }
 
         try {

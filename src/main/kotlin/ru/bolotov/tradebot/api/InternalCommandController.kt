@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.service.TradingBotService
 import ru.bolotov.tradebot.service.InstrumentSelectionService
+import ru.bolotov.tradebot.service.ProtectionReplacementResult
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.StrategyManager
 
@@ -283,7 +284,7 @@ class InternalCommandController(
     @PostMapping("/risk/update")
     fun updateRiskConfig(@RequestBody request: RiskConfigRequest): ResponseEntity<Map<String, Any?>> {
         return try {
-            config.update(
+            val updated = config.preview(
                 positionSizePercent = request.positionSizePercent,
                 stopLossPercent = request.stopLossPercent,
                 takeProfitPercent = request.takeProfitPercent,
@@ -292,6 +293,13 @@ class InternalCommandController(
                 brokerLimitUsage = request.brokerLimitUsage,
                 minOrderCashBuffer = request.minOrderCashBuffer
             )
+            val protectionResult = updateActiveProtectionIfNeeded(request, updated)
+            if (protectionResult is ProtectionReplacementResult.Failed) {
+                return ResponseEntity.unprocessableEntity().body(
+                    mapOf("success" to false, "error" to protectionResult.message)
+                )
+            }
+            config.apply(updated)
             config.persist()
 
             ResponseEntity.ok(
@@ -314,7 +322,7 @@ class InternalCommandController(
 
     @PostMapping("/risk/reset")
     fun resetRiskConfig(): ResponseEntity<Map<String, Any>> {
-        config.update(
+        val updated = config.preview(
             positionSizePercent = 0.05,
             stopLossPercent = 0.02,
             takeProfitPercent = 0.03,
@@ -323,6 +331,16 @@ class InternalCommandController(
             brokerLimitUsage = 0.95,
             minOrderCashBuffer = 100L
         )
+        val protectionResult = tradingBotService.replaceActiveBrokerProtection(
+            stopLossPercent = updated.stopLossPercent,
+            takeProfitPercent = updated.takeProfitPercent
+        )
+        if (protectionResult is ProtectionReplacementResult.Failed) {
+            return ResponseEntity.unprocessableEntity().body(
+                mapOf("success" to false, "error" to protectionResult.message)
+            )
+        }
+        config.apply(updated)
         config.persist()
 
         return ResponseEntity.ok(
@@ -331,6 +349,19 @@ class InternalCommandController(
                 "message" to "Параметры риска сброшены к значениям по умолчанию",
                 "config" to config.toMap()
             )
+        )
+    }
+
+    private fun updateActiveProtectionIfNeeded(
+        request: RiskConfigRequest,
+        updated: PositionSizingConfig.RiskSettings
+    ): ProtectionReplacementResult {
+        if (request.stopLossPercent == null && request.takeProfitPercent == null) {
+            return ProtectionReplacementResult.Success
+        }
+        return tradingBotService.replaceActiveBrokerProtection(
+            stopLossPercent = updated.stopLossPercent,
+            takeProfitPercent = updated.takeProfitPercent
         )
     }
 }

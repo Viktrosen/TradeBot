@@ -32,6 +32,25 @@ class TradeEventService(
     fun findOpenEvent(positionId: String): TradeEvent? =
         tradeEventRepository.findByPositionIdAndEventType(positionId, EventType.OPEN)
 
+    fun findUnclosedLongPositions(): List<OpenPosition> =
+        tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(EventStatus.PROCESSED, EventType.OPEN)
+            .asSequence()
+            .filter { it.direction == OrderDirection.BUY }
+            .filter { event -> event.positionId != null && !hasCloseEvent(requireNotNull(event.positionId)) }
+            .map { event ->
+                OpenPosition(
+                    positionId = requireNotNull(event.positionId),
+                    instrumentId = event.instrumentId,
+                    instrumentName = event.instrumentName,
+                    direction = event.direction,
+                    entryPrice = event.price,
+                    quantity = event.quantity,
+                    lotSize = event.lotSize,
+                    entryTime = event.processedAt ?: event.createdAt
+                )
+            }
+            .toList()
+
     fun findLastOpenPositionId(instrumentId: String, direction: OrderDirection): String? =
         tradeEventRepository.findFirstByInstrumentIdAndDirectionAndEventTypeOrderByCreatedAtDesc(
             instrumentId,

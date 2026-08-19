@@ -40,6 +40,9 @@ class InvestApiConfig(
     fun ordersService(investApi: InvestApi) = investApi.ordersService
 
     @Bean
+    fun stopOrdersService(investApi: InvestApi) = investApi.stopOrdersService
+
+    @Bean
     fun marketDataService(investApi: InvestApi) = investApi.marketDataService
 
     @Bean

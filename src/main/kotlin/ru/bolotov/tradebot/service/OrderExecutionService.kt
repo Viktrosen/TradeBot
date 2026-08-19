@@ -252,6 +252,17 @@ class OrderExecutionService(
         false
     }
 
+    fun getExecutedOrder(accountId: String, orderId: String): BrokerOrderExecution? = runCatching {
+        val state = ordersService.getOrderStateSync(accountId, orderId)
+        BrokerOrderExecution(
+            price = moneyValueToBigDecimal(state.averagePositionPrice),
+            commission = moneyValueToBigDecimal(state.executedCommission) ?: BigDecimal.ZERO,
+            status = state.executionReportStatus.name
+        )
+    }.onFailure { error ->
+        logger.warn(error) { "Не удалось получить исполнение заявки $orderId" }
+    }.getOrNull()
+
     private fun toTinkoffDirection(direction: String): TinkoffOrderDirection =
         if (direction == "BUY") TinkoffOrderDirection.ORDER_DIRECTION_BUY
         else TinkoffOrderDirection.ORDER_DIRECTION_SELL
@@ -314,6 +325,12 @@ data class BrokerLotLimits(
     val maxBuyLots: Long,
     val maxMarketBuyLots: Long,
     val availableBuyMoney: BigDecimal
+)
+
+data class BrokerOrderExecution(
+    val price: BigDecimal?,
+    val commission: BigDecimal,
+    val status: String
 )
 
 data class OrderFillResult(

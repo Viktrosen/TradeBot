@@ -22,6 +22,17 @@ class BrokerPortfolioSyncService(
     private val tradeEventService: TradeEventService
 ) {
 
+    fun getOpenLongInstrumentIds(accountId: String): Set<String> = runCatching {
+        operationsService.getPortfolioSync(accountId).positions
+            .asSequence()
+            .filter { position -> position.quantity > BigDecimal.ZERO }
+            .map { position -> position.instrumentUid }
+            .filter(String::isNotBlank)
+            .toSet()
+    }.onFailure { error ->
+        portfolioSyncLogger.error(error) { "Не удалось получить пакетное состояние портфеля брокера" }
+    }.getOrThrow()
+
     fun synchronizeLongPositionForSell(
         accountId: String?,
         marketData: MarketData,
@@ -243,4 +254,3 @@ data class BrokerPortfolioRestoreResult(
     val positions: Map<String, OpenPosition>,
     val instrumentIds: List<String>
 )
-
