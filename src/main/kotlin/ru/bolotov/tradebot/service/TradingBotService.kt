@@ -250,7 +250,7 @@ class TradingBotService(
                     lotSize = event.lotSize,
                     realizedPnl = event.pnl ?: BigDecimal.ZERO,
                     closedAt = (event.processedAt ?: event.createdAt).toString(),
-                    aiExplanation = event.explanation.aiExplanation() ?: openEvent?.explanation?.aiExplanation()
+                    closeExplanation = event.explanation
                 )
             },
             metrics = DashboardMetricsResponse(
@@ -491,8 +491,11 @@ class TradingBotService(
         }
 
         val position = _openPositions.value[marketData.instrumentId]
-        if (position != null && checkStopLossOrTakeProfit(position, marketData.currentPrice)) {
-            emit(BotSignal.Close(position, CloseReason.RISK_LIMIT))
+        val riskCloseReason = position?.let {
+            checkStopLossOrTakeProfit(it, marketData.currentPrice)
+        }
+        if (position != null && riskCloseReason != null) {
+            emit(BotSignal.Close(position, riskCloseReason))
             return@flow
         }
 
@@ -715,7 +718,10 @@ class TradingBotService(
         portfolioSnapshotService.takeSnapshot(accountId)
     }
 
-    private fun checkStopLossOrTakeProfit(position: OpenPosition, currentPrice: BigDecimal): Boolean {
+    private fun checkStopLossOrTakeProfit(
+        position: OpenPosition,
+        currentPrice: BigDecimal
+    ): CloseReason? {
         val pnlPercent = if (position.direction == DomainOrderDirection.BUY) {
             (currentPrice - position.entryPrice) / position.entryPrice
         } else {
@@ -725,15 +731,15 @@ class TradingBotService(
         return when {
             pnlPercent <= -positionSizingConfig.stopLossPercent -> {
                 logger.warn { "Стоп-лосс для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
-                true
+                CloseReason.STOP_LOSS
             }
 
             pnlPercent >= positionSizingConfig.takeProfitPercent -> {
                 logger.info { "Тейк-профит для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
-                true
+                CloseReason.TAKE_PROFIT
             }
 
-            else -> false
+            else -> null
         }
     }
 
@@ -797,6 +803,7 @@ private fun String.aiExplanation(): String? =
     lineSequence().firstOrNull { it.startsWith("AI: ") }?.removePrefix("AI: ")
 
 private enum class CloseReason(val eventReason: String) {
-    RISK_LIMIT("RISK_CLOSE"),
+    STOP_LOSS("STOP_LOSS"),
+    TAKE_PROFIT("TAKE_PROFIT"),
     STRATEGY_SIGNAL("SIGNAL_CLOSE")
 }

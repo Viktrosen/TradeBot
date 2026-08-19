@@ -395,12 +395,18 @@ class PositionLifecycleService(
             closePrice = closePrice,
             pnl = pnl,
             reason = reason,
-            explanation = explanation ?: "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
+            explanation = explanation ?: closeExplanation(reason, pnl)
         )
         positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
         closeEvent?.let(eventPublisherService::publishTradeExecuted)
         closingPositionIds.remove(position.positionId)
         return ClosePositionResult(position, closed = true, removeFromState = true)
+    }
+
+    private fun closeExplanation(reason: String, pnl: BigDecimal): String = when (reason) {
+        "STOP_LOSS" -> "Позиция закрыта по стоп-лоссу. Итоговый P&L: $pnl RUB"
+        "TAKE_PROFIT" -> "Позиция закрыта по тейк-профиту. Итоговый P&L: $pnl RUB"
+        else -> "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
     }
 
     private suspend fun waitForOpenFill(

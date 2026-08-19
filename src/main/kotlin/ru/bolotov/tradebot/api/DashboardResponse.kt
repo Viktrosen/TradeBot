@@ -35,7 +35,7 @@ data class ClosedTradeResponse(
     val lotSize: Int,
     val realizedPnl: BigDecimal,
     val closedAt: String,
-    val aiExplanation: String? = null
+    val closeExplanation: String? = null
 )
 
 data class DashboardMetricsResponse(
