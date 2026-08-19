@@ -32,6 +32,9 @@ class RabbitMQConfig {
     fun queuePositionsChanged(): Queue = Queue("positions.changed.queue", true)
 
     @Bean
+    fun queueTradingAvailabilityChanged(): Queue = Queue("trading.availability.changed.queue", true)
+
+    @Bean
     fun bindingTradeExecuted(): Binding = BindingBuilder
         .bind(queueTradeExecuted())
         .to(tradeEventsExchange())
@@ -66,6 +69,12 @@ class RabbitMQConfig {
         .bind(queuePositionsChanged())
         .to(tradeEventsExchange())
         .with("positions.changed")
+
+    @Bean
+    fun bindingTradingAvailabilityChanged(): Binding = BindingBuilder
+        .bind(queueTradingAvailabilityChanged())
+        .to(tradeEventsExchange())
+        .with("trading.availability.changed")
 
     @Bean
     fun jackson2JsonMessageConverter(): Jackson2JsonMessageConverter = Jackson2JsonMessageConverter()

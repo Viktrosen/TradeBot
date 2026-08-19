@@ -68,6 +68,8 @@ class TradingBotService(
     private val brokerProtectionReconciliationService: BrokerProtectionReconciliationService,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
     @Value("\${instrument.rescan.interval-ms:7200000}") private val instrumentRescanIntervalMs: Long,
+    @Value("\${trading.availability.refresh.interval-ms:60000}")
+    private val tradingAvailabilityRefreshIntervalMs: Long,
     @Value("\${trading.exit.profit.min-strategy-confidence:0.80}")
     private val minProfitExitConfidence: Double,
     @Value("\${trading.exit.loss.min-strategy-confidence:0.80}")
@@ -87,6 +89,7 @@ class TradingBotService(
     private var accountId: String? = null
     private var priceStreamJob: Job? = null
     private var schedulerJob: Job? = null
+    private var tradingAvailabilityJob: Job? = null
 
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
@@ -98,6 +101,7 @@ class TradingBotService(
     private var isPortfolioRestored = false
     private var isClosingPositions = false
     private var nextInstrumentRescanAt: Instant = Instant.MAX
+    private var lastTradingAvailability: Map<String, Boolean> = emptyMap()
 
     init {
         runBlocking {
@@ -126,12 +130,14 @@ class TradingBotService(
         startPriceStream()
         startBrokerProtectionReconciliation()
         startScheduler()
+        startTradingAvailabilityUpdates()
     }
 
     fun stop() {
         _isRunning.value = false
         priceStreamJob?.cancel()
         schedulerJob?.cancel()
+        tradingAvailabilityJob?.cancel()
         brokerProtectionReconciliationService.stop()
         logger.info { "Бот остановлен" }
         eventPublisherService.publishBotStatusChanged("STOPPED")
@@ -144,7 +150,16 @@ class TradingBotService(
         }
 
         try {
-            applySelectedInstruments(instrumentSelectionService.selectByCurrentFilters())
+            val selectedInstruments = instrumentSelectionService.selectByCurrentFilters()
+            if (selectedInstruments.isEmpty() && _activeInstruments.value.isNotEmpty()) {
+                logger.info {
+                    "Рескан не изменил список: не найдено доступных для торговли инструментов, " +
+                        "сохраняем текущий список до следующей сессии"
+                }
+                return _activeInstruments.value
+            }
+            applySelectedInstruments(selectedInstruments)
+            publishTradingAvailabilityIfChanged()
             restartPriceStreamIfRunning()
             return _activeInstruments.value
         } finally {
@@ -154,6 +169,7 @@ class TradingBotService(
 
     fun updateInstruments(instruments: List<String>) {
         _activeInstruments.value = instruments
+        publishTradingAvailabilityIfChanged()
         logger.info { "Обновлён список инструментов: $instruments" }
         restartPriceStreamIfRunning()
     }
@@ -343,9 +359,22 @@ class TradingBotService(
     }
 
     fun getActiveInstruments(): List<String> = _activeInstruments.value
-    suspend fun getActiveInstrumentDetails(): List<Map<String, String>> = _activeInstruments.value.map { uid ->
-        val info = marketDataProvider.getInstrumentInfo(uid)
-        mapOf("id" to uid, "ticker" to (info?.ticker ?: uid), "name" to (info?.name ?: "Инструмент"))
+    suspend fun getActiveInstrumentDetails(): List<Map<String, Any>> {
+        val tradingAvailability = getTradingAvailability(_activeInstruments.value)
+        return _activeInstruments.value.map { uid ->
+            val info = marketDataProvider.getInstrumentInfo(uid)
+            mapOf(
+                "id" to uid,
+                "ticker" to (info?.ticker ?: uid),
+                "name" to (info?.name ?: "Инструмент"),
+                "tradingAvailable" to (tradingAvailability[uid] ?: false)
+            )
+        }
+    }
+
+    fun areAllActiveInstrumentTradingsUnavailable(): Boolean {
+        val activeInstruments = _activeInstruments.value
+        return activeInstruments.isNotEmpty() && getTradingAvailability(activeInstruments).values.none { it }
     }
     fun getStatus(): Boolean = _isRunning.value
     fun getCurrentStrategy(): TradingStrategy = strategyManager.getCurrentStrategy()
@@ -380,6 +409,45 @@ class TradingBotService(
         _activeInstruments.value = instrumentSelectionService.mergeWithOpenPositions(
             selectedInstruments,
             _openPositions.value.keys
+        )
+    }
+
+    private fun getTradingAvailability(instrumentIds: List<String>): Map<String, Boolean> {
+        if (instrumentIds.isEmpty()) return emptyMap()
+
+        return runCatching {
+            investApi.marketDataService.getTradingStatusesSync(instrumentIds)
+                .tradingStatusesList
+                .associate { status ->
+                    status.instrumentUid to (
+                        status.apiTradeAvailableFlag && status.marketOrderAvailableFlag
+                        )
+                }
+        }.onFailure { error ->
+            logger.warn(error) { "Не удалось получить актуальные статусы торговли инструментов" }
+        }.getOrElse {
+            instrumentIds.associateWith { false }
+        }
+    }
+
+    private fun startTradingAvailabilityUpdates() {
+        tradingAvailabilityJob = scope.launch {
+            publishTradingAvailabilityIfChanged(force = true)
+            while (_isRunning.value) {
+                delay(tradingAvailabilityRefreshIntervalMs)
+                publishTradingAvailabilityIfChanged()
+            }
+        }
+    }
+
+    private fun publishTradingAvailabilityIfChanged(force: Boolean = false) {
+        val availability = getTradingAvailability(_activeInstruments.value)
+        if (!force && availability == lastTradingAvailability) return
+
+        lastTradingAvailability = availability
+        eventPublisherService.publishTradingAvailabilityChanged(
+            tradingAvailability = availability,
+            allTradingUnavailable = availability.isNotEmpty() && availability.values.none { it }
         )
     }
 

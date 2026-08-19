@@ -97,6 +97,27 @@ class EventPublisherService(
         logger.info { "Опубликовано событие bot.status.changed: $status" }
     }
 
+    fun publishTradingAvailabilityChanged(
+        tradingAvailability: Map<String, Boolean>,
+        allTradingUnavailable: Boolean
+    ) {
+        val message = objectMapper.writeValueAsString(
+            mapOf(
+                "eventType" to "TRADING_AVAILABILITY_CHANGED",
+                "data" to mapOf(
+                    "instruments" to tradingAvailability.map { (instrumentId, tradingAvailable) ->
+                        mapOf(
+                            "instrumentId" to instrumentId,
+                            "tradingAvailable" to tradingAvailable
+                        )
+                    },
+                    "allTradingUnavailable" to allTradingUnavailable
+                )
+            )
+        )
+        rabbitTemplate.convertAndSend("trade.events", "trading.availability.changed", message)
+    }
+
     fun publishBotHeartbeat(isRunning: Boolean) {
         val message = objectMapper.writeValueAsString(
             mapOf(

@@ -55,7 +55,8 @@ class InternalCommandController(
             mapOf(
                 "running" to tradingBotService.getStatus(),
                 "currentStrategy" to currentStrategyResponse(),
-                "activeInstruments" to tradingBotService.getActiveInstruments()
+                "activeInstruments" to tradingBotService.getActiveInstruments(),
+                "allTradingUnavailable" to tradingBotService.areAllActiveInstrumentTradingsUnavailable()
             )
         )
     }
