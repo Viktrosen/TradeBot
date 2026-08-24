@@ -113,6 +113,13 @@ class BrokerPortfolioSyncService(
                         continue
                     }
 
+                    val currentQuantity = pos.quantity
+                    if (currentQuantity <= BigDecimal.ZERO) {
+                        skippedPositions++
+                        logUnsupportedBrokerPosition(instrumentInfo.name, currentQuantity)
+                        continue
+                    }
+
                     val avgPrice = moneyToBigDecimal(pos.averagePositionPrice)
                     if (avgPrice <= BigDecimal.ZERO) {
                         portfolioSyncLogger.warn {
@@ -121,8 +128,6 @@ class BrokerPortfolioSyncService(
                         continue
                     }
 
-                    val currentQuantity = pos.quantity
-                    val direction = if (currentQuantity > BigDecimal.ZERO) OrderDirection.BUY else OrderDirection.SELL
                     val marketData = runCatching { marketDataProvider.fetchMarketData(instrumentUid) }
                         .onFailure { portfolioSyncLogger.warn(it) { "Не удалось получить ATR для $instrumentUid" } }
                         .getOrNull()
@@ -136,7 +141,7 @@ class BrokerPortfolioSyncService(
                         continue
                     }
 
-                    val positionId = tradeEventService.findLastOpenPositionId(instrumentUid, direction)
+                    val positionId = tradeEventService.findLastOpenPositionId(instrumentUid, OrderDirection.BUY)
                         ?: UUID.randomUUID().toString()
                     if (tradeEventService.hasCloseEvent(positionId)) {
                         portfolioSyncLogger.info {
@@ -146,17 +151,13 @@ class BrokerPortfolioSyncService(
                     }
 
                     val atr = marketData?.atr
-                    val stopLossPrice = when {
-                        direction == OrderDirection.BUY && atr != null -> avgPrice - atr * BigDecimal("1.5")
-                        direction == OrderDirection.SELL && atr != null -> avgPrice + atr * BigDecimal("1.5")
-                        else -> null
-                    }
+                    val stopLossPrice = atr?.let { avgPrice - it * BigDecimal("1.5") }
 
                     val restoredPosition = OpenPosition(
                         positionId = positionId,
                         instrumentId = instrumentUid,
                         instrumentName = instrumentInfo.name,
-                        direction = direction,
+                        direction = OrderDirection.BUY,
                         entryPrice = avgPrice,
                         quantity = quantityLots,
                         lotSize = lotSize,
@@ -226,6 +227,23 @@ class BrokerPortfolioSyncService(
                     "Пропускаем нераспознанную брокерскую позицию $instrumentUid: нет данных об инструменте"
                 }
             }.getOrNull()
+        }
+    }
+
+    private fun logUnsupportedBrokerPosition(
+        instrumentName: String,
+        quantity: BigDecimal
+    ) {
+        if (quantity < BigDecimal.ZERO) {
+            portfolioSyncLogger.warn {
+                "Короткая позиция $instrumentName (${quantity.abs()} ед.) обнаружена у брокера и " +
+                    "проигнорирована: бот работает только с long-позициями. " +
+                    "Закройте её вручную в приложении брокера."
+            }
+        } else {
+            portfolioSyncLogger.debug {
+                "Нулевая позиция $instrumentName пропущена при синхронизации портфеля"
+            }
         }
     }
 

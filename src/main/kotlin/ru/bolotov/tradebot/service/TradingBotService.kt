@@ -239,12 +239,6 @@ class TradingBotService(
             aiExplanation = aiExplanation
         )
 
-    private fun OpenPosition.calculateUnrealizedPnl(currentPrice: BigDecimal): BigDecimal =
-        currentPrice
-            .subtract(entryPrice)
-            .multiply(BigDecimal.valueOf(quantity))
-            .multiply(BigDecimal.valueOf(lotSize.toLong()))
-
     fun getDashboard(): DashboardResponse {
         val closedEvents = tradeEventService.findProcessedCloseEvents()
         val todayStart = java.time.LocalDate.now()

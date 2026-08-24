@@ -37,11 +37,15 @@ class PositionLifecycleService(
         strategyName: String,
         strategyExplanation: String
     ): OpenPosition? {
-        val direction = if (signal.direction == ru.bolotov.tradebot.strategy.OrderDirection.BUY) {
-            OrderDirection.BUY
-        } else {
-            OrderDirection.SELL
+        if (signal.direction != ru.bolotov.tradebot.strategy.OrderDirection.BUY) {
+            positionLifecycleLogger.error {
+                "Открытие позиции ${marketData.instrumentName} отклонено: " +
+                    "бот поддерживает только покупки, получен сигнал ${signal.direction}"
+            }
+            return null
         }
+
+        val direction = OrderDirection.BUY
         val positionId = UUID.randomUUID().toString()
         val savedEvent = tradeEventService.createPendingOpenEvent(
             positionId = positionId,
@@ -60,7 +64,7 @@ class PositionLifecycleService(
             instrumentId = marketData.instrumentId,
             quantity = positionSize.quantity,
             price = marketData.currentPrice,
-            direction = if (signal.direction == ru.bolotov.tradebot.strategy.OrderDirection.BUY) "BUY" else "SELL"
+            direction = "BUY"
         )
 
         if (!orderResult.success) {

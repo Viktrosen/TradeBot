@@ -17,5 +17,13 @@ data class OpenPosition(
     val entryTime: Instant,
     val stopLossPrice: BigDecimal? = null,
     val atr: BigDecimal? = null
-)
+) {
+    fun calculateUnrealizedPnl(currentPrice: BigDecimal): BigDecimal {
+        val priceDifference = when (direction) {
+            OrderDirection.BUY -> currentPrice - entryPrice
+            OrderDirection.SELL -> entryPrice - currentPrice
+        }
 
+        return priceDifference * quantity.toBigDecimal() * lotSize.toBigDecimal()
+    }
+}

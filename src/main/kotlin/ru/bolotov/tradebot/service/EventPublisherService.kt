@@ -53,9 +53,8 @@ class EventPublisherService(
         position: OpenPosition,
         currentPrice: BigDecimal
     ) {
-        val positionValue = currentPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
         val entryValue = position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
-        val unrealizedPnl = positionValue - entryValue
+        val unrealizedPnl = position.calculateUnrealizedPnl(currentPrice)
         val pnlPercent = if (entryValue > BigDecimal.ZERO) {
             unrealizedPnl * BigDecimal(100) / entryValue
         } else {
