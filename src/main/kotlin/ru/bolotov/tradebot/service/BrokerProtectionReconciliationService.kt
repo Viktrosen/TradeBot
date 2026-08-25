@@ -12,12 +12,15 @@ import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.tinkoff.piapi.contract.v1.MoneyValue
+import ru.tinkoff.piapi.contract.v1.Quotation
+import ru.tinkoff.piapi.contract.v1.TradesStreamRequest
 import ru.tinkoff.piapi.contract.v1.TradesStreamResponse
-import ru.tinkoff.piapi.core.InvestApi
-import ru.tinkoff.piapi.core.stream.StreamProcessor
+import ru.ttech.piapi.core.InvestApi
+import ru.ttech.piapi.core.UsersServiceSync
+import ru.bolotov.tradebot.broker.getMarginAttributesSync
+import ru.bolotov.tradebot.domain.model.PositionSide
 import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.function.Consumer
 
 private val reconciliationLogger = KotlinLogging.logger {}
 
@@ -28,11 +31,14 @@ class BrokerProtectionReconciliationService(
     private val positionProtectionService: PositionProtectionService,
     private val positionLifecycleService: PositionLifecycleService,
     private val orderExecutionService: OrderExecutionService,
+    private val usersService: UsersServiceSync,
     private val portfolioSnapshotService: PortfolioSnapshotService,
     private val eventPublisherService: EventPublisherService,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean,
     @Value("\${broker.protection.reconciliation-delay-ms:180000}")
-    private val reconciliationDelayMs: Long
+    private val reconciliationDelayMs: Long,
+    @Value("\${trading.short.min-margin-sufficiency}")
+    private val minimumMarginSufficiency: Double
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val reconciliationInProgress = AtomicBoolean(false)
@@ -43,7 +49,7 @@ class BrokerProtectionReconciliationService(
     private var accountId: String? = null
     private var positionsProvider: (() -> Collection<OpenPosition>)? = null
     private var onPositionClosed: (suspend (OpenPosition) -> Unit)? = null
-    private var streamKey: String? = null
+    private var streamJob: Job? = null
     private var periodicJob: Job? = null
     private var reconnectAttempt = 0
 
@@ -66,8 +72,8 @@ class BrokerProtectionReconciliationService(
 
     fun stop() {
         started.set(false)
-        streamKey?.let(investApi.ordersStreamService::closeStream)
-        streamKey = null
+        streamJob?.cancel()
+        streamJob = null
         periodicJob?.cancel()
         periodicJob = null
         reconnectAttempt = 0
@@ -95,11 +101,16 @@ class BrokerProtectionReconciliationService(
     }
 
     private fun subscribeToTrades(accountId: String) {
-        streamKey = investApi.ordersStreamService.subscribeTrades(
-            StreamProcessor(::handleTradeStreamMessage),
-            Consumer(::handleStreamError),
-            listOf(accountId)
-        )
+        streamJob?.cancel()
+        streamJob = scope.launch {
+            runCatching {
+                val stream = investApi.ordersStreamServiceAsync.tradesStream(
+                    TradesStreamRequest.newBuilder().addAccounts(accountId).build(),
+                    ::handleTradeStreamMessage
+                )
+                stream.join()
+            }.onFailure(::handleStreamError)
+        }
         reconciliationLogger.info { "Подключён поток исполнений заявок T-Invest для защитных заявок" }
     }
 
@@ -107,8 +118,8 @@ class BrokerProtectionReconciliationService(
         reconnectAttempt = 0
         val trade = response.takeIf(TradesStreamResponse::hasOrderTrades)?.orderTrades ?: return
         if (trade.instrumentUid.isBlank() || trade.tradesCount == 0) return
-        if (trade.direction.name != "ORDER_DIRECTION_SELL") return
-        if (trade.instrumentUid !in currentPositions().map(OpenPosition::instrumentId)) return
+        val position = currentPositions().firstOrNull { it.instrumentId == trade.instrumentUid } ?: return
+        if (!matchesCloseDirection(trade.direction.name, position)) return
 
         requestReconciliation("исполнение продажи из пользовательского потока")
     }
@@ -157,9 +168,14 @@ class BrokerProtectionReconciliationService(
         reason: String,
         onClosed: (suspend (OpenPosition) -> Unit)?
     ) {
-        val brokerLongInstrumentIds = brokerPortfolioSyncService.getOpenLongInstrumentIds(accountId)
+        val activePositions = closeShortsWithUnsafeMargin(accountId, positions, onClosed)
+        if (activePositions.isEmpty()) return
+
+        val brokerQuantities = brokerPortfolioSyncService.getBrokerPositionQuantities(accountId)
         val snapshot = positionProtectionService.loadBrokerSnapshot(accountId) ?: return
-        val closedPositions = positions.filter { it.instrumentId !in brokerLongInstrumentIds }
+        val closedPositions = activePositions.filter { position ->
+            !position.isPresentAtBroker(brokerQuantities[position.instrumentId])
+        }
         closedPositions.forEach { position ->
             val triggered = positionProtectionService.findTriggeredProtection(position, snapshot)
             if (triggered == null) {
@@ -198,4 +214,54 @@ class BrokerProtectionReconciliationService(
         .add(BigDecimal.valueOf(nano.toLong(), 9))
 
     private fun currentPositions(): Collection<OpenPosition> = positionsProvider?.invoke() ?: emptyList()
+
+    private suspend fun closeShortsWithUnsafeMargin(
+        accountId: String,
+        positions: List<OpenPosition>,
+        onClosed: (suspend (OpenPosition) -> Unit)?
+    ): List<OpenPosition> {
+        val shortPositions = positions.filter { it.side == PositionSide.SHORT }
+        if (shortPositions.isEmpty()) return positions
+
+        val margin = usersService.getMarginAttributesSync(accountId)
+        val sufficiency = margin.fundsSufficiencyLevel.toBigDecimal()
+        val missingFunds = margin.amountOfMissingFunds.toBigDecimal()
+        val minimumSufficiency = minimumMarginSufficiency.toBigDecimal()
+        val marginUnsafe = missingFunds > BigDecimal.ZERO || sufficiency < minimumSufficiency
+        if (!marginUnsafe) return positions
+
+        reconciliationLogger.error {
+            "Маржинальные показатели небезопасны: достаточность=$sufficiency, " +
+                    "недостающие средства=$missingFunds. Закрываем ${shortPositions.size} шорт-позиций"
+        }
+        val closedIds = mutableSetOf<String>()
+        for (position in shortPositions) {
+            val result = positionLifecycleService.closePositionWithRetry(
+                accountId = accountId,
+                position = position,
+                reason = "MARGIN_RISK_CLOSE",
+                explanation = "Шорт закрыт из-за недостаточной маржи: " +
+                    "достаточность=$sufficiency, недостающие средства=$missingFunds RUB"
+            )
+            if (result.removeFromState) {
+                onClosed?.invoke(result.position)
+                closedIds += result.position.positionId
+            }
+        }
+        return positions.filterNot { it.positionId in closedIds }
+    }
+
+    private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
+        .add(BigDecimal.valueOf(nano.toLong(), 9))
+
+    private fun matchesCloseDirection(direction: String, position: OpenPosition): Boolean =
+        when (position.side) {
+            PositionSide.LONG -> direction == "ORDER_DIRECTION_SELL"
+            PositionSide.SHORT -> direction == "ORDER_DIRECTION_BUY"
+        }
+
+    private fun OpenPosition.isPresentAtBroker(quantity: BigDecimal?): Boolean = when (side) {
+        PositionSide.LONG -> quantity != null && quantity > BigDecimal.ZERO
+        PositionSide.SHORT -> quantity != null && quantity < BigDecimal.ZERO
+    }
 }

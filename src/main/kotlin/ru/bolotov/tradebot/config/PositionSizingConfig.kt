@@ -32,6 +32,9 @@ class PositionSizingConfig(
     val minOrderCashBuffer: Long
         get() = settingsValue.get().minOrderCashBuffer
 
+    val shortTradingEnabled: Boolean
+        get() = settingsValue.get().shortTradingEnabled
+
     @PostConstruct
     fun loadPersistedConfig() {
         persistenceService.loadConfig()?.let { saved ->
@@ -42,7 +45,8 @@ class PositionSizingConfig(
                 maxCapitalUsage = saved.maxCapitalUsage,
                 maxPositions = saved.maxPositions,
                 brokerLimitUsage = saved.brokerLimitUsage,
-                minOrderCashBuffer = saved.minOrderCashBuffer
+                minOrderCashBuffer = saved.minOrderCashBuffer,
+                shortTradingEnabled = saved.shortTradingEnabled
             )
         }
     }
@@ -54,7 +58,8 @@ class PositionSizingConfig(
         maxCapitalUsage: Double? = null,
         maxPositions: Int? = null,
         brokerLimitUsage: Double? = null,
-        minOrderCashBuffer: Long? = null
+        minOrderCashBuffer: Long? = null,
+        shortTradingEnabled: Boolean? = null
     ) {
         settingsValue.set(preview(
             positionSizePercent = positionSizePercent,
@@ -63,7 +68,8 @@ class PositionSizingConfig(
             maxCapitalUsage = maxCapitalUsage,
             maxPositions = maxPositions,
             brokerLimitUsage = brokerLimitUsage,
-            minOrderCashBuffer = minOrderCashBuffer
+            minOrderCashBuffer = minOrderCashBuffer,
+            shortTradingEnabled = shortTradingEnabled
         ))
     }
 
@@ -74,7 +80,8 @@ class PositionSizingConfig(
         maxCapitalUsage: Double? = null,
         maxPositions: Int? = null,
         brokerLimitUsage: Double? = null,
-        minOrderCashBuffer: Long? = null
+        minOrderCashBuffer: Long? = null,
+        shortTradingEnabled: Boolean? = null
     ): RiskSettings {
         val current = settingsValue.get()
         val updated = current.copy(
@@ -84,7 +91,8 @@ class PositionSizingConfig(
             maxCapitalUsage = maxCapitalUsage ?: current.maxCapitalUsage,
             maxPositions = maxPositions ?: current.maxPositions,
             brokerLimitUsage = brokerLimitUsage ?: current.brokerLimitUsage,
-            minOrderCashBuffer = minOrderCashBuffer ?: current.minOrderCashBuffer
+            minOrderCashBuffer = minOrderCashBuffer ?: current.minOrderCashBuffer,
+            shortTradingEnabled = shortTradingEnabled ?: current.shortTradingEnabled
         )
         validate(updated)
         return updated
@@ -104,7 +112,8 @@ class PositionSizingConfig(
             maxCapitalUsage = settings.maxCapitalUsage,
             maxPositions = settings.maxPositions,
             brokerLimitUsage = settings.brokerLimitUsage,
-            minOrderCashBuffer = settings.minOrderCashBuffer
+            minOrderCashBuffer = settings.minOrderCashBuffer,
+            shortTradingEnabled = settings.shortTradingEnabled
         )
     }
 
@@ -121,7 +130,8 @@ class PositionSizingConfig(
             "maxCapitalUsagePercent" to settings.maxCapitalUsage.toPercentString(),
             "maxPositions" to settings.maxPositions,
             "brokerLimitUsage" to settings.brokerLimitUsage,
-            "minOrderCashBuffer" to settings.minOrderCashBuffer
+            "minOrderCashBuffer" to settings.minOrderCashBuffer,
+            "shortTradingEnabled" to settings.shortTradingEnabled
         )
     }
 
@@ -158,7 +168,8 @@ class PositionSizingConfig(
         val maxCapitalUsage: Double,
         val maxPositions: Int,
         val brokerLimitUsage: Double,
-        val minOrderCashBuffer: Long
+        val minOrderCashBuffer: Long,
+        val shortTradingEnabled: Boolean
     ) {
         companion object {
             fun defaults() = RiskSettings(
@@ -168,7 +179,8 @@ class PositionSizingConfig(
                 maxCapitalUsage = 0.80,
                 maxPositions = 10,
                 brokerLimitUsage = 0.95,
-                minOrderCashBuffer = 100L
+                minOrderCashBuffer = 100L,
+                shortTradingEnabled = false
             )
         }
     }

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.domain.model.PositionSide
 import org.springframework.web.client.RestClient
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
@@ -176,7 +177,9 @@ class AiTradeSignalFilter(
     ): Double = when (signal.direction) {
         OrderDirection.BUY -> minBuyConfidence
         OrderDirection.SELL -> {
-            if (position != null && currentPrice < position.entryPrice) {
+            if (position == null) {
+                minBuyConfidence
+            } else if (position.hasUnrealizedLoss(currentPrice)) {
                 minLossSellConfidence
             } else {
                 minProfitSellConfidence
@@ -191,22 +194,22 @@ class AiTradeSignalFilter(
         const val NANOS_IN_MILLISECOND = 1_000_000L
 
         const val SYSTEM_PROMPT = """
-            Ты — консервативный фильтр подтверждения сигналов long-only торгового бота.
+            Ты — консервативный фильтр подтверждения сигналов торгового бота.
             Оценивай только переданные структурированные данные рынка и сигнал стратегии.
             Не выдумывай новости, цены, индикаторы или прочие данные.
 
-            Для BUY одобряй вход только при согласованном подтверждении стратегии и индикаторов.
-            Не одобряй покупку при противоречивых индикаторах, недостатке данных, чрезмерно растянутом
-            движении цены или когда сигнал выглядит как попытка догнать уже совершившийся рост.
+            Если position отсутствует, BUY означает открытие LONG, а SELL — открытие SHORT.
+            Одобряй открытие только при согласованном подтверждении стратегии и индикаторов. Не одобряй
+            вход при противоречивых индикаторах, недостатке данных или чрезмерно растянутом движении цены.
 
-            Для SELL используй currentPnlPercent и entryPrice из position.
-            Если позиция в прибыли, одобряй продажу при достаточном подтверждении выхода.
-            Если позиция в убытке, одобряй продажу только при сильном и согласованном подтверждении
-            продолжения снижения: паттерн, тренд и доступные индикаторы должны указывать в одну сторону.
+            Если position присутствует, action в signal — это действие закрытия: SELL закрывает LONG,
+            BUY закрывает SHORT. Используй positionSide, currentPnlPercent и entryPrice из position.
+            При положительном P&L одобряй закрытие при достаточном подтверждении выхода.
+            При отрицательном P&L одобряй закрытие только при сильном и согласованном подтверждении
+            неблагоприятного движения: для LONG — дальнейшего снижения, для SHORT — дальнейшего роста.
             Учитывай близость текущего убытка к stopLossPrice. При слабых, смешанных или недостаточных
-            признаках продолжения снижения возвращай HOLD, не одобряй преждевременную убыточную продажу.
-            Однако не пытайся любой ценой удерживать убыточную позицию: при убедительном риске дальнейшего
-            падения одобряй SELL. Стоп-лосс остаётся безусловной защитой и к тебе не поступает.
+            признаках возвращай HOLD, не одобряй преждевременное убыточное закрытие.
+            Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
 
             REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
             Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
@@ -330,6 +333,7 @@ private data class AiMarketContext(
 }
 
 private data class AiPositionContext(
+    val positionSide: String,
     val entryPrice: BigDecimal,
     val currentPnlPercent: Double,
     val stopLossPrice: BigDecimal?,
@@ -337,6 +341,7 @@ private data class AiPositionContext(
 ) {
     companion object {
         fun from(position: OpenPosition, currentPrice: BigDecimal) = AiPositionContext(
+            positionSide = position.side.name,
             entryPrice = position.entryPrice,
             currentPnlPercent = position.currentPnlPercent(currentPrice),
             stopLossPrice = position.stopLossPrice,
@@ -346,8 +351,16 @@ private data class AiPositionContext(
 }
 
 private fun OpenPosition.currentPnlPercent(currentPrice: BigDecimal): Double =
-    (currentPrice - entryPrice)
+    priceDifference(currentPrice)
         .divide(entryPrice, PNL_SCALE, java.math.RoundingMode.HALF_UP)
         .toDouble()
+
+private fun OpenPosition.hasUnrealizedLoss(currentPrice: BigDecimal): Boolean =
+    priceDifference(currentPrice) < BigDecimal.ZERO
+
+private fun OpenPosition.priceDifference(currentPrice: BigDecimal): BigDecimal = when (side) {
+    PositionSide.LONG -> currentPrice - entryPrice
+    PositionSide.SHORT -> entryPrice - currentPrice
+}
 
 private const val PNL_SCALE = 8

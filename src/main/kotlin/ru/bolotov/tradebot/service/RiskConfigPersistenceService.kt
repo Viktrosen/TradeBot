@@ -27,7 +27,8 @@ class RiskConfigPersistenceService(
         maxCapitalUsage: Double,
         maxPositions: Int,
         brokerLimitUsage: Double,
-        minOrderCashBuffer: Long
+        minOrderCashBuffer: Long,
+        shortTradingEnabled: Boolean
     ) {
         repository.save(
             RiskConfigEntity(
@@ -39,6 +40,7 @@ class RiskConfigPersistenceService(
                 maxPositions = maxPositions,
                 brokerLimitUsage = brokerLimitUsage,
                 minOrderCashBuffer = minOrderCashBuffer,
+                shortTradingEnabled = shortTradingEnabled,
                 updatedAt = Instant.now()
             )
         )

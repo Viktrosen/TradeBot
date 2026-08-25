@@ -33,6 +33,9 @@ class RiskConfigEntity(
     @Column(name = "min_order_cash_buffer")
     var minOrderCashBuffer: Long = 100L,
 
+    @Column(name = "short_trading_enabled")
+    var shortTradingEnabled: Boolean = false,
+
     @Column(name = "updated_at")
     var updatedAt: Instant = Instant.now()
 )

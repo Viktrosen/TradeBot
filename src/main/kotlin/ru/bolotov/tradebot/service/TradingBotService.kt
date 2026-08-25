@@ -23,11 +23,13 @@ import kotlinx.coroutines.channels.awaitClose
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
+import ru.bolotov.tradebot.broker.getTradingStatusesSync
 import ru.bolotov.tradebot.api.ClosedTradeResponse
 import ru.bolotov.tradebot.api.DashboardMetricsResponse
 import ru.bolotov.tradebot.api.DashboardResponse
 import ru.bolotov.tradebot.api.OpenPositionResponse
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
@@ -35,15 +37,18 @@ import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.bolotov.tradebot.strategy.TradingStrategy
 import ru.tinkoff.piapi.contract.v1.LastPrice
+import ru.tinkoff.piapi.contract.v1.LastPriceInstrument
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
-import ru.tinkoff.piapi.core.InvestApi
-import ru.tinkoff.piapi.core.stream.StreamProcessor
+import ru.tinkoff.piapi.contract.v1.MarketDataServerSideStreamRequest
+import ru.tinkoff.piapi.contract.v1.SubscribeLastPriceRequest
+import ru.tinkoff.piapi.contract.v1.SubscriptionAction
+import ru.ttech.piapi.core.InvestApi
+import ru.ttech.piapi.core.MarketDataServiceSync
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.function.Consumer
 
 private val logger = KotlinLogging.logger {}
 
@@ -51,6 +56,7 @@ private val logger = KotlinLogging.logger {}
 class TradingBotService(
     private val marketDataProvider: MarketDataProvider,
     private val investApi: InvestApi,
+    private val marketDataService: MarketDataServiceSync,
     private val strategyManager: StrategyManager,
     private val candlestickPatternStrategy: CandlestickPatternStrategy,
     private val eventPublisherService: EventPublisherService,
@@ -227,6 +233,7 @@ class TradingBotService(
             instrumentId = instrumentId,
             instrumentName = instrumentName,
             direction = direction.name,
+            positionSide = side.name,
             entryPrice = entryPrice,
             currentPrice = currentPrice,
             unrealizedPnl = currentPrice?.let { price ->
@@ -261,6 +268,7 @@ class TradingBotService(
                     instrumentId = event.instrumentId,
                     instrumentName = event.instrumentName,
                     direction = event.direction.name,
+                    positionSide = event.positionSide.name,
                     entryPrice = openEvent?.price ?: event.price,
                     entryTime = openEvent?.processedAt?.toString() ?: openEvent?.createdAt?.toString(),
                     closePrice = event.price,
@@ -410,8 +418,7 @@ class TradingBotService(
         if (instrumentIds.isEmpty()) return emptyMap()
 
         return runCatching {
-            investApi.marketDataService.getTradingStatusesSync(instrumentIds)
-                .tradingStatusesList
+            marketDataService.getTradingStatusesSync(instrumentIds)
                 .associate { status ->
                     status.instrumentUid to (
                         status.apiTradeAvailableFlag && status.marketOrderAvailableFlag
@@ -452,7 +459,7 @@ class TradingBotService(
         }
 
         val result = brokerPortfolioSyncService.restorePositions(accountId)
-        val persistedOpenPositions = tradeEventService.findUnclosedLongPositions()
+        val persistedOpenPositions = tradeEventService.findUnclosedPositions()
             .associateBy(OpenPosition::instrumentId)
         _openPositions.value = persistedOpenPositions + result.positions
         _activeInstruments.value = (
@@ -547,34 +554,38 @@ class TradingBotService(
         _isRunning.value && _openPositions.value.isNotEmpty()
 
     private fun subscribeToLastPrices(instrumentUids: List<String>): Flow<LastPrice> = callbackFlow {
-        val streamId = "trade_bot_stream_${System.currentTimeMillis()}"
-        val streamService = investApi.marketDataStreamService
-        val processor = StreamProcessor<MarketDataResponse> { response ->
-            if (response.hasLastPrice()) trySend(response.lastPrice)
-        }
-        val onErrorCallback = Consumer<Throwable> { error ->
-            if (error is io.grpc.StatusRuntimeException && error.status.code == io.grpc.Status.Code.CANCELLED) {
-                logger.debug { "Стрим $streamId отменён штатно" }
-            } else {
-                logger.error(error) { "Ошибка стрима $streamId" }
+        val request = MarketDataServerSideStreamRequest.newBuilder()
+            .setSubscribeLastPriceRequest(
+                SubscribeLastPriceRequest.newBuilder()
+                    .setSubscriptionAction(SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE)
+                    .addAllInstruments(instrumentUids.map(::lastPriceInstrument))
+                    .build()
+            )
+            .build()
+        val streamJob = launch {
+            runCatching {
+                val stream = investApi.marketDataStreamServiceAsync.marketDataServerSideStream(
+                    request,
+                    { response -> if (response.hasLastPrice()) trySend(response.lastPrice) }
+                )
+                stream.join()
+            }.onFailure { error ->
+                if (error !is CancellationException) {
+                    logger.error(error) { "Ошибка стрима цен" }
+                    close(error)
+                }
             }
-            close(error)
         }
-
-        val subscription = streamService.newStream(streamId, processor, onErrorCallback)
-        subscription.subscribeLastPrices(instrumentUids)
-        logger.info { "Стрим $streamId запущен, подписаны ${instrumentUids.size} инструментов" }
+        logger.info { "Стрим цен запущен, подписаны ${instrumentUids.size} инструментов" }
 
         awaitClose {
-            logger.info { "Закрытие стрима $streamId" }
-            try {
-                subscription.unsubscribeLastPrices(instrumentUids)
-                subscription.cancel()
-            } catch (e: Exception) {
-                logger.debug(e) { "Ошибка при закрытии стрима $streamId" }
-            }
+            streamJob.cancel()
+            logger.info { "Стрим цен закрыт" }
         }
     }
+
+    private fun lastPriceInstrument(instrumentId: String): LastPriceInstrument =
+        LastPriceInstrument.newBuilder().setInstrumentId(instrumentId).build()
 
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
@@ -623,25 +634,16 @@ class TradingBotService(
         }
 
         if (signal.direction == OrderDirection.SELL) {
-            val positionToClose = synchronizePositionForSell(marketData) ?: return@flow
-            if (!canCloseByStrategy(positionToClose, marketData, signal)) return@flow
+            val currentPosition = _openPositions.value[marketData.instrumentId]
+            if (currentPosition?.side == PositionSide.SHORT) return@flow
 
-            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, positionToClose)
-            if (!aiResult.approved) {
-                logger.info {
-                    "Продажа отклонена AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
-                }
+            val longPosition = currentPosition ?: synchronizePositionForSell(marketData)
+            if (longPosition != null) {
+                emitCloseSignalIfApproved(longPosition, marketData, signal, strategy)
                 return@flow
             }
-            pendingLossExitConfirmations.remove(positionToClose.instrumentId)
-            emit(
-                BotSignal.Close(
-                    position = positionToClose,
-                    reason = CloseReason.STRATEGY_SIGNAL,
-                    aiResult = aiResult,
-                    sourceCandleKey = marketData.candlestickPattern?.candleKey
-                )
-            )
+
+            emitOpenSignalIfApproved(marketData, signal, strategy, null)
             return@flow
         }
 
@@ -654,32 +656,71 @@ class TradingBotService(
             return@flow
         }
 
-        if (canExecuteBuySignal(marketData)) {
-            val currentPosition = _openPositions.value[marketData.instrumentId]
-            if (currentPosition != null) return@flow
-
-            val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, currentPosition)
-            if (!aiResult.approved) {
-                logger.info {
-                    "Сигнал отклонён AI-фильтром: ${marketData.instrumentName} -> ${signal.direction}"
-                }
-                return@flow
-            }
-
-            logger.info { "Сигнал принят: ${marketData.instrumentName} -> ${signal.direction}" }
-            emit(
-                BotSignal.Trade(
-                    marketData,
-                    signal,
-                    strategy.name,
-                    strategy.getExplanation(marketData),
-                    aiResult
-                )
-            )
+        val currentPosition = _openPositions.value[marketData.instrumentId]
+        if (currentPosition?.side == PositionSide.SHORT) {
+            emitCloseSignalIfApproved(currentPosition, marketData, signal, strategy)
+            return@flow
         }
+        if (currentPosition == null) emitOpenSignalIfApproved(marketData, signal, strategy, null)
     }
 
-    private fun canExecuteBuySignal(marketData: MarketData): Boolean {
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<BotSignal>.emitCloseSignalIfApproved(
+        position: OpenPosition,
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal,
+        strategy: TradingStrategy
+    ) {
+        if (!canCloseByStrategy(position, marketData, signal)) return
+
+        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, position)
+        if (!aiResult.approved) {
+            logger.info { "Закрытие отклонено AI-фильтром: ${marketData.instrumentName}" }
+            return
+        }
+        pendingLossExitConfirmations.remove(position.instrumentId)
+        emit(
+            BotSignal.Close(
+                position = position,
+                reason = CloseReason.STRATEGY_SIGNAL,
+                aiResult = aiResult,
+                sourceCandleKey = marketData.candlestickPattern?.candleKey
+            )
+        )
+    }
+
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<BotSignal>.emitOpenSignalIfApproved(
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal,
+        strategy: TradingStrategy,
+        currentPosition: OpenPosition?
+    ) {
+        if (!canExecuteOpenSignal(marketData, signal)) return
+
+        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, currentPosition)
+        if (!aiResult.approved) {
+            logger.info { "Открытие отклонено AI-фильтром: ${marketData.instrumentName}" }
+            return
+        }
+        logger.info { "Сигнал на открытие принят: ${marketData.instrumentName} -> ${signal.direction}" }
+        emit(
+            BotSignal.Trade(
+                marketData,
+                signal,
+                strategy.name,
+                strategy.getExplanation(marketData),
+                aiResult
+            )
+        )
+    }
+
+    private fun canExecuteOpenSignal(
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal
+    ): Boolean {
+        if (signal.direction == OrderDirection.SELL && !positionSizingConfig.shortTradingEnabled) {
+            logger.debug { "Шорт ${marketData.instrumentName} пропущен: выключен в настройках риска" }
+            return false
+        }
         val cooldownEndsAt = reentryCooldownUntil[marketData.instrumentId] ?: return true
         if (Instant.now().isBefore(cooldownEndsAt)) {
             logger.debug {
@@ -705,7 +746,7 @@ class TradingBotService(
         val requiredConfidence = if (isProfitable) minProfitExitConfidence else minLossExitConfidence
         if (signal.confidence < requiredConfidence) {
             logger.info {
-                "Продажа ${marketData.instrumentName} пропущена: уверенность ${signal.confidence} " +
+                "Закрытие ${marketData.instrumentName} пропущено: уверенность ${signal.confidence} " +
                     "ниже порога $requiredConfidence"
             }
             return false
@@ -720,7 +761,11 @@ class TradingBotService(
         position: OpenPosition,
         currentPrice: BigDecimal
     ): Boolean {
-        val grossPnl = (currentPrice - position.entryPrice) *
+        val priceDifference = when (position.side) {
+            PositionSide.LONG -> currentPrice - position.entryPrice
+            PositionSide.SHORT -> position.entryPrice - currentPrice
+        }
+        val grossPnl = priceDifference *
             position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
         val estimatedTotalCommission = position.entryCommission * BigDecimal(2)
         return grossPnl > estimatedTotalCommission
@@ -734,13 +779,13 @@ class TradingBotService(
         val previousCandleKey = pendingLossExitConfirmations.put(position.instrumentId, candleKey)
         if (previousCandleKey == null) {
             logger.info {
-                "Продажа ${marketData.instrumentName} в убытке ожидает подтверждения на следующей закрытой свече"
+                "Закрытие ${marketData.instrumentName} в убытке ожидает подтверждения на следующей закрытой свече"
             }
             return false
         }
 
         logger.info {
-            "Продажа ${marketData.instrumentName} в убытке подтверждена двумя закрытыми свечами"
+            "Закрытие ${marketData.instrumentName} в убытке подтверждено двумя закрытыми свечами"
         }
         return true
     }
@@ -836,10 +881,9 @@ class TradingBotService(
         position: OpenPosition,
         currentPrice: BigDecimal
     ): CloseReason? {
-        val pnlPercent = if (position.direction == DomainOrderDirection.BUY) {
-            (currentPrice - position.entryPrice) / position.entryPrice
-        } else {
-            (position.entryPrice - currentPrice) / position.entryPrice
+        val pnlPercent = when (position.side) {
+            PositionSide.LONG -> (currentPrice - position.entryPrice) / position.entryPrice
+            PositionSide.SHORT -> (position.entryPrice - currentPrice) / position.entryPrice
         }.toDouble()
 
         return when {

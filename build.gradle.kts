@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "ru.bolotov"
-version = "0.5.3-SNAPSHOT"
+version = "0.7.0-SNAPSHOT"
 description = "TradeBot"
 
 java {
@@ -45,8 +45,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.8.1")
 
-    implementation("ru.tinkoff.piapi:java-sdk-spring-boot-starter:1.31")
-    implementation("ru.tinkoff.piapi:java-sdk-strategy:1.31")
+    implementation("ru.t-technologies.invest.piapi.kotlin:kotlin-sdk-grpc-core:1.49.3")
 
     implementation("io.grpc:grpc-netty-shaded:1.64.0")
 

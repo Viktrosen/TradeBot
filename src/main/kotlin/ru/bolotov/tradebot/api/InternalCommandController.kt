@@ -292,7 +292,8 @@ class InternalCommandController(
                 maxCapitalUsage = request.maxCapitalUsage,
                 maxPositions = request.maxPositions,
                 brokerLimitUsage = request.brokerLimitUsage,
-                minOrderCashBuffer = request.minOrderCashBuffer
+                minOrderCashBuffer = request.minOrderCashBuffer,
+                shortTradingEnabled = request.shortTradingEnabled
             )
             val protectionResult = updateActiveProtectionIfNeeded(request, updated)
             if (protectionResult is ProtectionReplacementResult.Failed) {
@@ -330,7 +331,8 @@ class InternalCommandController(
             maxCapitalUsage = 0.80,
             maxPositions = 10,
             brokerLimitUsage = 0.95,
-            minOrderCashBuffer = 100L
+            minOrderCashBuffer = 100L,
+            shortTradingEnabled = false
         )
         val protectionResult = tradingBotService.replaceActiveBrokerProtection(
             stopLossPercent = updated.stopLossPercent,
@@ -382,7 +384,8 @@ data class RiskConfigRequest(
     val maxCapitalUsage: Double? = null,
     val maxPositions: Int? = null,
     val brokerLimitUsage: Double? = null,
-    val minOrderCashBuffer: Long? = null
+    val minOrderCashBuffer: Long? = null,
+    val shortTradingEnabled: Boolean? = null
 )
 
 private fun RiskConfigRequest.updateDescriptions(): List<String> = buildList {
@@ -393,4 +396,5 @@ private fun RiskConfigRequest.updateDescriptions(): List<String> = buildList {
     maxPositions?.let { add("maxPositions = $it") }
     brokerLimitUsage?.let { add("brokerLimitUsage = ${"%.0f".format(it * 100)}%") }
     minOrderCashBuffer?.let { add("minOrderCashBuffer = $it") }
+    shortTradingEnabled?.let { add("shortTradingEnabled = $it") }
 }

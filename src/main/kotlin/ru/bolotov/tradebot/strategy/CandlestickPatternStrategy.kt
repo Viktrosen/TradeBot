@@ -1,5 +1,7 @@
 package ru.bolotov.tradebot.strategy
 
+import ru.bolotov.tradebot.broker.*
+
 /*
  * [Получение только закрытых свечей]
  *                 |
@@ -26,7 +28,7 @@ import kotlinx.coroutines.launch
 import org.springframework.stereotype.Component
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
-import ru.tinkoff.piapi.core.MarketDataService
+import ru.ttech.piapi.core.MarketDataServiceSync
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Duration
@@ -37,7 +39,7 @@ private val logger = KotlinLogging.logger {}
 
 @Component
 class CandlestickPatternStrategy(
-    private val marketDataService: MarketDataService
+    private val marketDataService: MarketDataServiceSync
 ) : TradingStrategy {
 
     override var name = "CandlestickPatterns"

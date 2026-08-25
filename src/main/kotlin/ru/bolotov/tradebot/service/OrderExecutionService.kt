@@ -1,5 +1,7 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Service
@@ -8,7 +10,7 @@ import ru.tinkoff.piapi.contract.v1.OrderDirection as TinkoffOrderDirection
 import ru.tinkoff.piapi.contract.v1.OrderExecutionReportStatus
 import ru.tinkoff.piapi.contract.v1.OrderType
 import ru.tinkoff.piapi.contract.v1.Quotation
-import ru.tinkoff.piapi.core.OrdersService
+import ru.ttech.piapi.core.OrdersServiceSync
 import java.math.BigDecimal
 import java.util.UUID
 
@@ -16,7 +18,7 @@ private val logger = KotlinLogging.logger {}
 
 @Service
 class OrderExecutionService(
-    private val ordersService: OrdersService
+    private val ordersService: OrdersServiceSync
 ) {
 
     suspend fun placeOrder(
@@ -24,7 +26,8 @@ class OrderExecutionService(
         instrumentId: String,
         quantity: Long,
         price: BigDecimal,
-        direction: String
+        direction: String,
+        isMarginTrade: Boolean = false
     ): OrderResult {
         return try {
             val tinkoffDirection = if (direction == "BUY")
@@ -44,7 +47,8 @@ class OrderExecutionService(
                 tinkoffDirection,
                 accountId,
                 OrderType.ORDER_TYPE_LIMIT,
-                orderId
+                orderId,
+                isMarginTrade
             )
             logger.info { "Заявка отправлена: $order" }
             OrderResult(
@@ -68,7 +72,8 @@ class OrderExecutionService(
         accountId: String,
         instrumentId: String,
         quantity: Long,
-        direction: String
+        direction: String,
+        isMarginTrade: Boolean = false
     ): OrderResult {
         return try {
             val tinkoffDirection = if (direction == "BUY")
@@ -84,7 +89,8 @@ class OrderExecutionService(
                 tinkoffDirection,
                 accountId,
                 OrderType.ORDER_TYPE_MARKET,
-                orderId
+                orderId,
+                isMarginTrade
             )
 
             logger.info { "Рыночная заявка отправлена: $order" }
@@ -135,7 +141,8 @@ class OrderExecutionService(
     fun getBrokerLotLimits(
         accountId: String,
         instrumentId: String,
-        price: BigDecimal
+        price: BigDecimal,
+        direction: String
     ): BrokerLotLimits? {
         return try {
             val response = ordersService.getMaxLotsSync(
@@ -144,12 +151,15 @@ class OrderExecutionService(
                 quotationFromBigDecimal(price)
             )
             val buyLimits = response.buyLimits
+            val sellLimits = response.sellMarginLimits
 
             BrokerLotLimits(
                 currency = response.currency,
                 maxBuyLots = buyLimits.buyMaxLots,
                 maxMarketBuyLots = buyLimits.buyMaxMarketLots,
-                availableBuyMoney = quotationToBigDecimal(buyLimits.buyMoneyAmount)
+                availableBuyMoney = quotationToBigDecimal(buyLimits.buyMoneyAmount),
+                maxSellLots = sellLimits.sellMaxLots,
+                direction = direction
             )
         } catch (e: Exception) {
             logger.warn(e) { "Failed to get broker lot limits for $instrumentId" }
@@ -324,7 +334,9 @@ data class BrokerLotLimits(
     val currency: String,
     val maxBuyLots: Long,
     val maxMarketBuyLots: Long,
-    val availableBuyMoney: BigDecimal
+    val availableBuyMoney: BigDecimal,
+    val maxSellLots: Long,
+    val direction: String
 )
 
 data class BrokerOrderExecution(

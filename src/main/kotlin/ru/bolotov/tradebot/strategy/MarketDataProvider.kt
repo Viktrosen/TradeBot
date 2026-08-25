@@ -1,26 +1,27 @@
 package ru.bolotov.tradebot.strategy
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Component
-import ru.tinkoff.piapi.core.MarketDataService
+import ru.ttech.piapi.core.MarketDataServiceSync
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.tinkoff.piapi.contract.v1.Quotation
-import ru.tinkoff.piapi.core.InstrumentsService
+import ru.ttech.piapi.core.InstrumentsServiceSync
 import java.math.BigDecimal
 import java.math.MathContext
 import java.math.RoundingMode
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 private val logger = KotlinLogging.logger {}
 
 @Component
 class MarketDataProvider(
-    private val marketDataService: MarketDataService,
-    private val instrumentsService: InstrumentsService
+    private val marketDataService: MarketDataServiceSync,
+    private val instrumentsService: InstrumentsServiceSync
 ) {
     private val instrumentCache = ConcurrentHashMap<String, InstrumentInfo>()
     private val calculationContext = MathContext.DECIMAL64
@@ -38,8 +39,7 @@ class MarketDataProvider(
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
 
             // 1. Последняя цена
-            val lastPricesFuture = marketDataService.getLastPrices(listOf(instrumentUid))
-            val lastPrices = lastPricesFuture.get(10, TimeUnit.SECONDS)
+            val lastPrices = marketDataService.getLastPricesSync(listOf(instrumentUid))
             val lastPrice = lastPrices.firstOrNull()
                 ?: throw IllegalStateException("Нет данных о последней цене для $displayName")
             val currentPrice = quotationToBigDecimal(lastPrice.price)
@@ -47,13 +47,12 @@ class MarketDataProvider(
             // 2. Свечи за последние 3 дня
             val now = Instant.now()
             val threeDaysAgo = now.minusSeconds(259200)
-            val candlesFuture = marketDataService.getCandles(
+            val candles = marketDataService.getCandlesSync(
                 instrumentUid,
                 threeDaysAgo,
                 now,
                 CandleInterval.CANDLE_INTERVAL_5_MIN
             )
-            val candles = candlesFuture.get(10, TimeUnit.SECONDS)
                 .filter { candle -> isClosed(candle, now, 5 * 60L) }
             val closes = candles.map { quotationToBigDecimal(it.close) }
             val volumes = candles.map { it.volume }
@@ -105,8 +104,7 @@ class MarketDataProvider(
 
         return try {
             marketDataService
-                .getLastPrices(instrumentUids.distinct())
-                .get(10, TimeUnit.SECONDS)
+                .getLastPricesSync(instrumentUids.distinct())
                 .associate { lastPrice ->
                     lastPrice.instrumentUid to quotationToBigDecimal(lastPrice.price)
                 }
@@ -165,7 +163,7 @@ class MarketDataProvider(
             info
         } catch (e: Exception) {
             try {
-                val share = instrumentsService.getShareByUidSync(instrumentUid)
+                val share = instrumentsService.getShareByUidSync(instrumentUid).instrument
                 val info = InstrumentInfo(
                     ticker = share.ticker,
                     name = share.name,

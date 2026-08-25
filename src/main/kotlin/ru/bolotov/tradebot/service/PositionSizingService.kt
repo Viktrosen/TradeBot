@@ -3,6 +3,7 @@ package ru.bolotov.tradebot.service
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -17,7 +18,8 @@ class PositionSizingService(
     fun calculatePositionSize(
         marketData: MarketData,
         portfolioCapital: BigDecimal,
-        currentPositions: Map<String, OpenPosition>
+        currentPositions: Map<String, OpenPosition>,
+        side: PositionSide
     ): PositionSizingResult {
         if (currentPositions.size >= config.maxPositions) {
             return reject(PositionSizingRejection.MAX_POSITIONS_REACHED)
@@ -42,7 +44,8 @@ class PositionSizingService(
             quantity = quantity,
             lotPrice = lotPrice,
             portfolioCapital = portfolioCapital,
-            marketData = marketData
+            marketData = marketData,
+            side = side
         )
         logCalculatedPosition(marketData, positionBudget, capitalBudget, positionSize)
         return PositionSizingResult.Allowed(positionSize)
@@ -59,9 +62,11 @@ class PositionSizingService(
         }
 
         val lotPrice = marketData.currentPrice * marketData.lotSize.toBigDecimal()
-        val brokerLots = brokerLotsAvailable(brokerLimits)
-        val cashLots = cashLotsAvailable(brokerLimits, lotPrice)
-        val finalQuantity = minOf(positionSize.quantity, brokerLots, cashLots)
+        val finalQuantity = minOf(
+            positionSize.quantity,
+            brokerLotsAvailable(brokerLimits),
+            cashLotsAvailable(brokerLimits, lotPrice)
+        )
         if (finalQuantity == 0L) {
             return reject(PositionSizingRejection.BROKER_LIMIT_EXCEEDED)
         }
@@ -113,12 +118,15 @@ class PositionSizingService(
         quantity: Long,
         lotPrice: BigDecimal,
         portfolioCapital: BigDecimal,
-        marketData: MarketData
+        marketData: MarketData,
+        side: PositionSide
     ): PositionSize {
         val value = lotPrice * quantity.toBigDecimal()
-        val stopLossPrice = marketData.currentPrice * (
-            BigDecimal.ONE - config.stopLossPercent.toBigDecimal()
-        )
+        val stopLossMultiplier = when (side) {
+            PositionSide.LONG -> BigDecimal.ONE - config.stopLossPercent.toBigDecimal()
+            PositionSide.SHORT -> BigDecimal.ONE + config.stopLossPercent.toBigDecimal()
+        }
+        val stopLossPrice = marketData.currentPrice * stopLossMultiplier
         return PositionSize(
             quantity = quantity,
             value = value,
@@ -132,18 +140,24 @@ class PositionSizingService(
         amount.divide(lotPrice, LOT_SCALE, RoundingMode.DOWN).toLong()
 
     private fun brokerLotsAvailable(brokerLimits: BrokerLotLimits): Long =
-        (brokerLimits.maxBuyLots.toBigDecimal() * config.brokerLimitUsage.toBigDecimal())
+        (brokerLimits.maxLotsForDirection().toBigDecimal() * config.brokerLimitUsage.toBigDecimal())
             .setScale(0, RoundingMode.DOWN)
             .toLong()
 
     private fun cashLotsAvailable(
         brokerLimits: BrokerLotLimits,
         lotPrice: BigDecimal
-    ): Long = lotsFor(
-        amount = (brokerLimits.availableBuyMoney - config.minOrderCashBuffer.toBigDecimal())
+    ): Long {
+        if (brokerLimits.direction == "SELL") return Long.MAX_VALUE
+        return lotsFor(
+            amount = (brokerLimits.availableBuyMoney - config.minOrderCashBuffer.toBigDecimal())
             .coerceAtLeast(BigDecimal.ZERO),
-        lotPrice = lotPrice
-    )
+            lotPrice = lotPrice
+        )
+    }
+
+    private fun BrokerLotLimits.maxLotsForDirection(): Long =
+        if (direction == "SELL") maxSellLots else maxBuyLots
 
     private fun capitalUsagePercent(value: BigDecimal, portfolioCapital: BigDecimal): Double =
         if (portfolioCapital > BigDecimal.ZERO) {

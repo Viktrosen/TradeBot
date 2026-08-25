@@ -1,8 +1,12 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.OrderDirection
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.Signal
 import java.math.BigDecimal
@@ -13,8 +17,10 @@ private val tradeDecisionLogger = KotlinLogging.logger {}
 class TradeDecisionService(
     private val positionSizingService: PositionSizingService,
     private val orderExecutionService: OrderExecutionService,
-    private val operationsService: ru.tinkoff.piapi.core.OperationsService,
-    private val positionLifecycleService: PositionLifecycleService
+    private val operationsService: ru.ttech.piapi.core.OperationsServiceSync,
+    private val positionLifecycleService: PositionLifecycleService,
+    private val positionSizingConfig: PositionSizingConfig,
+    private val shortTradingRiskService: ShortTradingRiskService
 ) {
 
     suspend fun executeTrade(
@@ -62,24 +68,30 @@ class TradeDecisionService(
         strategyExplanation: String,
         currentPositions: Map<String, OpenPosition>
     ): TradeDecisionResult {
-        if (signalDirection == OrderDirection.SELL) {
-            tradeDecisionLogger.warn {
-                "Продажа ${marketData.instrumentName} пропущена: короткие позиции не поддерживаются"
+        val side = signalDirection.toPositionSide()
+        if (side == PositionSide.SHORT) {
+            val rejection = shortOpenRejection(accountId, marketData.instrumentId)
+            if (rejection != null) {
+                tradeDecisionLogger.warn {
+                    "Шорт ${marketData.instrumentName} пропущен: $rejection"
+                }
+                return TradeDecisionResult()
             }
-            return TradeDecisionResult()
         }
 
         val portfolioCapital = getPortfolioCapital(accountId)
         val calculatedPositionSize = positionSizingService.calculatePositionSize(
             marketData = marketData,
             portfolioCapital = portfolioCapital,
-            currentPositions = currentPositions
+            currentPositions = currentPositions,
+            side = side
         ).positionSizeOrNull(marketData.instrumentName) ?: return TradeDecisionResult()
 
         val brokerLimits = orderExecutionService.getBrokerLotLimits(
             accountId = accountId,
             instrumentId = marketData.instrumentId,
-            price = marketData.currentPrice
+            price = marketData.currentPrice,
+            direction = signalDirection.name
         ) ?: run {
             tradeDecisionLogger.warn {
                 "Лимиты брокера недоступны для ${marketData.instrumentName}; открытие пропущено"
@@ -124,6 +136,21 @@ class TradeDecisionService(
         ru.bolotov.tradebot.strategy.OrderDirection.HOLD -> null
     }
 
+    private fun OrderDirection.toPositionSide(): PositionSide = when (this) {
+        OrderDirection.BUY -> PositionSide.LONG
+        OrderDirection.SELL -> PositionSide.SHORT
+    }
+
+    private fun shortOpenRejection(accountId: String, instrumentId: String): String? {
+        if (!positionSizingConfig.shortTradingEnabled) {
+            return "торговля в шорт выключена в настройках риска"
+        }
+        return when (val check = shortTradingRiskService.canOpenShort(accountId, instrumentId)) {
+            is ShortRiskCheck.Allowed -> null
+            is ShortRiskCheck.Rejected -> check.reason
+        }
+    }
+
     private fun PositionSizingResult.positionSizeOrNull(
         instrumentName: String
     ): PositionSize? = when (this) {
@@ -138,8 +165,9 @@ class TradeDecisionService(
 
     private suspend fun getPortfolioCapital(accountId: String): BigDecimal =
         try {
-            operationsService.getPortfolioSync(accountId).totalAmountPortfolio?.value
-                ?: BigDecimal.ZERO
+            operationsService.getPortfolioSync(accountId).totalAmountPortfolio.let { amount ->
+                BigDecimal.valueOf(amount.units).add(BigDecimal.valueOf(amount.nano.toLong(), 9))
+            }
         } catch (error: Exception) {
             tradeDecisionLogger.error(error) { "Не удалось получить стоимость портфеля" }
             BigDecimal.ZERO

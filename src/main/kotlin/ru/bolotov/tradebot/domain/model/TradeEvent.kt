@@ -20,6 +20,10 @@ data class TradeEvent(
     @Enumerated(EnumType.STRING)
     var direction: OrderDirection,
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "position_side", nullable = false)
+    var positionSide: PositionSide = PositionSide.LONG,
+
     @Column(precision = 20, scale = 4)
     var price: BigDecimal,
 
@@ -71,6 +75,11 @@ data class TradeEvent(
 
 enum class OrderDirection {
     BUY, SELL
+}
+
+enum class PositionSide {
+    LONG,
+    SHORT
 }
 
 enum class EventStatus {

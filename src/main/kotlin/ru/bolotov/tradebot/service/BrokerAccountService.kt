@@ -1,21 +1,23 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
 import ru.tinkoff.piapi.contract.v1.MoneyValue
-import ru.tinkoff.piapi.core.OperationsService
-import ru.tinkoff.piapi.core.SandboxService
-import ru.tinkoff.piapi.core.UsersService
+import ru.ttech.piapi.core.OperationsServiceSync
+import ru.ttech.piapi.core.SandboxServiceSync
+import ru.ttech.piapi.core.UsersServiceSync
 import java.math.BigDecimal
 
 private val accountLogger = KotlinLogging.logger {}
 
 @Service
 class BrokerAccountService(
-    private val operationsService: OperationsService,
-    private val usersService: UsersService,
-    private val sandboxService: SandboxService,
+    private val operationsService: OperationsServiceSync,
+    private val usersService: UsersServiceSync,
+    private val sandboxService: SandboxServiceSync,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
 
@@ -35,7 +37,7 @@ class BrokerAccountService(
     }
 
     private fun initializeSandboxAccount(): String? {
-        val accountId = sandboxService.accountsSync.firstOrNull()?.id ?: run {
+        val accountId = sandboxService.getAccountsSync().firstOrNull()?.id ?: run {
             closeAllSandboxAccounts()
             sandboxService.openAccountSync().also {
                 accountLogger.info { "Создан новый sandbox-счёт: $it" }
@@ -50,7 +52,9 @@ class BrokerAccountService(
     private fun ensureSandboxBalance(accountId: String) {
         try {
             val portfolio = operationsService.getPortfolioSync(accountId)
-            val currentBalance = portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+            val amount = portfolio.totalAmountCurrencies
+            val currentBalance = BigDecimal.valueOf(amount.units)
+                .add(BigDecimal.valueOf(amount.nano.toLong(), 9))
             if (currentBalance >= SANDBOX_MIN_BALANCE) return
 
             sandboxService.payInSync(
@@ -94,4 +98,3 @@ class BrokerAccountService(
         val SANDBOX_MIN_BALANCE: BigDecimal = BigDecimal.valueOf(50_000)
     }
 }
-

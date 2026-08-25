@@ -1,18 +1,20 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.PortfolioSnapshot
 import ru.bolotov.tradebot.domain.repository.PortfolioSnapshotRepository
-import ru.tinkoff.piapi.core.OperationsService
+import ru.ttech.piapi.core.OperationsServiceSync
 import java.math.BigDecimal
 
 private val portfolioSnapshotLogger = KotlinLogging.logger {}
 
 @Service
 class PortfolioSnapshotService(
-    private val operationsService: OperationsService,
+    private val operationsService: OperationsServiceSync,
     private val portfolioSnapshotRepository: PortfolioSnapshotRepository,
     private val objectMapper: ObjectMapper,
     private val eventPublisherService: EventPublisherService
@@ -30,31 +32,31 @@ class PortfolioSnapshotService(
 
             val portfolio = operationsService.getPortfolioSync(accountId)
             val positions = operationsService.getPositionsSync(accountId)
-            val total = portfolio.totalAmountPortfolio?.value ?: BigDecimal.ZERO
-            val moneyRub = positions.money.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
-            val blockedRub = positions.blocked.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
-            val availableCash = moneyRub?.value ?: BigDecimal.ZERO
-            val blockedCash = blockedRub?.value ?: BigDecimal.ZERO
+            val total = portfolio.totalAmountPortfolio.toBigDecimal()
+            val moneyRub = positions.moneyList.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
+            val blockedRub = positions.blockedList.firstOrNull { it.currency.equals("rub", ignoreCase = true) }
+            val availableCash = moneyRub?.toBigDecimal() ?: BigDecimal.ZERO
+            val blockedCash = blockedRub?.toBigDecimal() ?: BigDecimal.ZERO
             val cash = if (moneyRub != null || blockedRub != null) {
                 availableCash + blockedCash
             } else {
-                portfolio.totalAmountCurrencies?.value ?: BigDecimal.ZERO
+                portfolio.totalAmountCurrencies.toBigDecimal()
             }
 
             val positionsJson = objectMapper.writeValueAsString(
-                portfolio.positions.map { pos ->
-                    val currentPrice = pos.currentPrice?.value ?: BigDecimal.ZERO
+                portfolio.positionsList.map { pos ->
+                    val currentPrice = pos.currentPrice.toBigDecimal()
                     mapOf(
                         "instrumentId" to pos.instrumentUid,
                         "figi" to pos.figi,
                         "instrumentType" to pos.instrumentType,
-                        "quantity" to pos.quantity,
-                        "averagePrice" to (pos.averagePositionPrice?.value ?: BigDecimal.ZERO),
+                        "quantity" to pos.quantity.toBigDecimal(),
+                        "averagePrice" to pos.averagePositionPrice.toBigDecimal(),
                         "currentPrice" to currentPrice,
-                        "positionValue" to (currentPrice * pos.quantity),
-                        "expectedYield" to pos.expectedYield,
-                        "blocked" to pos.isBlocked,
-                        "blockedLots" to pos.blockedLots
+                        "positionValue" to currentPrice.multiply(pos.quantity.toBigDecimal()),
+                        "expectedYield" to pos.expectedYield.toBigDecimal(),
+                        "blocked" to pos.blocked,
+                        "blockedLots" to pos.blockedLots.toBigDecimal()
                     )
                 }
             )
@@ -79,3 +81,9 @@ class PortfolioSnapshotService(
         }
     }
 }
+
+private fun ru.tinkoff.piapi.contract.v1.MoneyValue.toBigDecimal(): BigDecimal =
+    BigDecimal.valueOf(units).add(BigDecimal.valueOf(nano.toLong(), 9))
+
+private fun ru.tinkoff.piapi.contract.v1.Quotation.toBigDecimal(): BigDecimal =
+    BigDecimal.valueOf(units).add(BigDecimal.valueOf(nano.toLong(), 9))

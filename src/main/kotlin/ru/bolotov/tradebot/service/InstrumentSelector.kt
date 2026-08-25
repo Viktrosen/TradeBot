@@ -1,13 +1,15 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Component
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.tinkoff.piapi.contract.v1.Quotation
-import ru.tinkoff.piapi.core.InstrumentsService
-import ru.tinkoff.piapi.core.MarketDataService
+import ru.ttech.piapi.core.InstrumentsServiceSync
+import ru.ttech.piapi.core.MarketDataServiceSync
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -17,8 +19,8 @@ private val logger = KotlinLogging.logger {}
 
 @Component
 class InstrumentSelector(
-    private val instrumentsService: InstrumentsService,
-    private val marketDataService: MarketDataService
+    private val instrumentsService: InstrumentsServiceSync,
+    private val marketDataService: MarketDataServiceSync
 ) {
 
     enum class InstrumentCategory(val types: List<String>, val description: String) {
@@ -150,8 +152,7 @@ class InstrumentSelector(
         if (instrumentUids.isEmpty()) return emptyMap()
 
         return try {
-            val response = marketDataService.getTradingStatusesSync(instrumentUids)
-            response.tradingStatusesList.associate { status ->
+            marketDataService.getTradingStatusesSync(instrumentUids).associate { status ->
                 status.instrumentUid to (status.apiTradeAvailableFlag && status.marketOrderAvailableFlag)
             }
         } catch (e: Exception) {

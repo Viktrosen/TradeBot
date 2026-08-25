@@ -1,13 +1,19 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.getInstrumentByUIDSync
+import ru.bolotov.tradebot.broker.getPortfolioSync
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.EventType
 import ru.bolotov.tradebot.domain.model.OrderDirection
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
-import ru.tinkoff.piapi.core.InstrumentsService
-import ru.tinkoff.piapi.core.OperationsService
+import ru.tinkoff.piapi.contract.v1.Quotation
+import ru.tinkoff.piapi.contract.v1.MoneyValue
+import ru.ttech.piapi.core.InstrumentsServiceSync
+import ru.ttech.piapi.core.OperationsServiceSync
 import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
@@ -16,19 +22,17 @@ private val portfolioSyncLogger = KotlinLogging.logger {}
 
 @Service
 class BrokerPortfolioSyncService(
-    private val operationsService: OperationsService,
-    private val instrumentsService: InstrumentsService,
+    private val operationsService: OperationsServiceSync,
+    private val instrumentsService: InstrumentsServiceSync,
     private val marketDataProvider: MarketDataProvider,
-    private val tradeEventService: TradeEventService
+    private val tradeEventService: TradeEventService,
+    private val positionSizingConfig: PositionSizingConfig
 ) {
 
-    fun getOpenLongInstrumentIds(accountId: String): Set<String> = runCatching {
-        operationsService.getPortfolioSync(accountId).positions
+    fun getBrokerPositionQuantities(accountId: String): Map<String, BigDecimal> = runCatching {
+        brokerPositions(accountId)
             .asSequence()
-            .filter { position -> position.quantity > BigDecimal.ZERO }
-            .map { position -> position.instrumentUid }
-            .filter(String::isNotBlank)
-            .toSet()
+            .associate { position -> position.instrumentId to position.quantity }
     }.onFailure { error ->
         portfolioSyncLogger.error(error) { "Не удалось получить пакетное состояние портфеля брокера" }
     }.getOrThrow()
@@ -47,12 +51,13 @@ class BrokerPortfolioSyncService(
         }
 
         return try {
-            val brokerPosition = operationsService.getPortfolioSync(accountId).positions
-                .firstOrNull { it.instrumentUid == marketData.instrumentId }
+            val brokerPosition = brokerPositions(accountId)
+                .firstOrNull { it.instrumentId == marketData.instrumentId }
 
             if (brokerPosition == null || brokerPosition.quantity <= BigDecimal.ZERO) {
                 portfolioSyncLogger.info {
-                    "Сигнал SELL для ${marketData.instrumentName} отклонён: длинной позиции в портфеле нет, шорты отключены"
+                    "Для SELL ${marketData.instrumentName} не найдена длинная позиция в портфеле; " +
+                        "сигнал может быть рассмотрен как открытие шорта"
                 }
                 return null
             }
@@ -69,7 +74,7 @@ class BrokerPortfolioSyncService(
                 instrumentId = marketData.instrumentId,
                 instrumentName = marketData.instrumentName,
                 direction = OrderDirection.BUY,
-                entryPrice = moneyToBigDecimal(brokerPosition.averagePositionPrice)
+                entryPrice = brokerPosition.averagePositionPrice
                     .takeIf { it > BigDecimal.ZERO } ?: marketData.currentPrice,
                 quantity = quantityLots,
                 lotSize = marketData.lotSize,
@@ -95,7 +100,7 @@ class BrokerPortfolioSyncService(
 
         return try {
             portfolioSyncLogger.info { "Синхронизация портфеля с брокером..." }
-            val brokerPositions = operationsService.getPortfolioSync(accountId).positions
+            val brokerPositions = brokerPositions(accountId)
             if (brokerPositions.isEmpty()) {
                 portfolioSyncLogger.info { "Нет открытых позиций на брокерском счёте" }
                 return BrokerPortfolioRestoreResult(emptyMap(), emptyList())
@@ -106,7 +111,7 @@ class BrokerPortfolioSyncService(
 
             for (pos in brokerPositions) {
                 try {
-                    val instrumentUid = pos.instrumentUid
+                    val instrumentUid = pos.instrumentId
                     val instrumentInfo = getRestorableInstrumentInfo(instrumentUid)
                     if (instrumentInfo == null) {
                         skippedPositions++
@@ -114,13 +119,13 @@ class BrokerPortfolioSyncService(
                     }
 
                     val currentQuantity = pos.quantity
-                    if (currentQuantity <= BigDecimal.ZERO) {
+                    val side = positionSideForRestoredPosition(instrumentInfo.name, instrumentUid, currentQuantity)
+                    if (side == null) {
                         skippedPositions++
-                        logUnsupportedBrokerPosition(instrumentInfo.name, currentQuantity)
                         continue
                     }
 
-                    val avgPrice = moneyToBigDecimal(pos.averagePositionPrice)
+                    val avgPrice = pos.averagePositionPrice
                     if (avgPrice <= BigDecimal.ZERO) {
                         portfolioSyncLogger.warn {
                             "Пропускаем позицию с нулевой средней ценой: $instrumentUid"
@@ -141,8 +146,11 @@ class BrokerPortfolioSyncService(
                         continue
                     }
 
-                    val positionId = tradeEventService.findLastOpenPositionId(instrumentUid, OrderDirection.BUY)
-                        ?: UUID.randomUUID().toString()
+                    val positionId = findRestoredPositionId(instrumentUid, side)
+                    if (positionId == null) {
+                        skippedPositions++
+                        continue
+                    }
                     if (tradeEventService.hasCloseEvent(positionId)) {
                         portfolioSyncLogger.info {
                             "Позиция ${instrumentInfo.name} не восстановлена: для positionId=$positionId уже есть CLOSE-событие"
@@ -151,13 +159,17 @@ class BrokerPortfolioSyncService(
                     }
 
                     val atr = marketData?.atr
-                    val stopLossPrice = atr?.let { avgPrice - it * BigDecimal("1.5") }
+                    val stopLossPrice = atr?.let { value ->
+                        if (side == PositionSide.LONG) avgPrice - value * BigDecimal("1.5")
+                        else avgPrice + value * BigDecimal("1.5")
+                    }
 
                     val restoredPosition = OpenPosition(
                         positionId = positionId,
                         instrumentId = instrumentUid,
                         instrumentName = instrumentInfo.name,
-                        direction = OrderDirection.BUY,
+                        direction = side.openDirection(),
+                        side = side,
                         entryPrice = avgPrice,
                         quantity = quantityLots,
                         lotSize = lotSize,
@@ -173,7 +185,7 @@ class BrokerPortfolioSyncService(
                                 "(${restoredPosition.quantity} лотов по ${restoredPosition.entryPrice} RUB)"
                     }
                 } catch (e: Exception) {
-                    portfolioSyncLogger.error(e) { "Ошибка восстановления позиции ${pos.instrumentUid}" }
+                    portfolioSyncLogger.error(e) { "Ошибка восстановления позиции ${pos.instrumentId}" }
                 }
             }
 
@@ -212,39 +224,58 @@ class BrokerPortfolioSyncService(
             }
         } catch (instrumentError: Exception) {
             portfolioSyncLogger.warn(instrumentError) {
-                "Не удалось распознать инструмент $instrumentUid через getInstrumentByUIDSync, пробуем как акцию"
+                "Не удалось распознать инструмент $instrumentUid при синхронизации портфеля"
             }
-            runCatching {
-                val share = instrumentsService.getShareByUidSync(instrumentUid)
-                RestorableInstrumentInfo(
-                    ticker = share.ticker,
-                    name = share.name.ifBlank { share.ticker.ifBlank { instrumentUid } },
-                    instrumentType = "share",
-                    lotSize = share.lot
-                )
-            }.onFailure { shareError ->
-                portfolioSyncLogger.warn(shareError) {
-                    "Пропускаем нераспознанную брокерскую позицию $instrumentUid: нет данных об инструменте"
-                }
-            }.getOrNull()
+            null
         }
     }
 
-    private fun logUnsupportedBrokerPosition(
+    private fun positionSideForRestoredPosition(
         instrumentName: String,
+        instrumentId: String,
         quantity: BigDecimal
-    ) {
-        if (quantity < BigDecimal.ZERO) {
-            portfolioSyncLogger.warn {
-                "Короткая позиция $instrumentName (${quantity.abs()} ед.) обнаружена у брокера и " +
-                    "проигнорирована: бот работает только с long-позициями. " +
-                    "Закройте её вручную в приложении брокера."
-            }
-        } else {
-            portfolioSyncLogger.debug {
-                "Нулевая позиция $instrumentName пропущена при синхронизации портфеля"
-            }
+    ): PositionSide? {
+        if (quantity > BigDecimal.ZERO) return PositionSide.LONG
+        if (quantity == BigDecimal.ZERO) {
+            portfolioSyncLogger.debug { "Нулевая позиция $instrumentName пропущена при синхронизации портфеля" }
+            return null
         }
+
+        if (!positionSizingConfig.shortTradingEnabled) {
+            portfolioSyncLogger.warn {
+                "Короткая позиция $instrumentName (${quantity.abs()} ед.) обнаружена у брокера и проигнорирована: " +
+                    "шорты выключены в настройках риска. Закройте её вручную или включите шорты после проверки."
+            }
+            return null
+        }
+        if (tradeEventService.findLastOpenPositionId(instrumentId, OrderDirection.SELL) == null) {
+            portfolioSyncLogger.error {
+                "Короткая позиция $instrumentName (${quantity.abs()} ед.) не восстановлена: " +
+                    "для неё нет OPEN-события бота. Это защита от принятия внешней позиции за позицию бота."
+            }
+            return null
+        }
+        return PositionSide.SHORT
+    }
+
+    private fun findRestoredPositionId(
+        instrumentId: String,
+        side: PositionSide
+    ): String? {
+        val direction = side.openDirection()
+        val positionId = tradeEventService.findLastOpenPositionId(instrumentId, direction)
+        if (positionId != null) return positionId
+
+        if (side == PositionSide.LONG) return UUID.randomUUID().toString()
+        portfolioSyncLogger.error {
+            "Шорт $instrumentId не восстановлен: не найдено OPEN-событие бота"
+        }
+        return null
+    }
+
+    private fun PositionSide.openDirection(): OrderDirection = when (this) {
+        PositionSide.LONG -> OrderDirection.BUY
+        PositionSide.SHORT -> OrderDirection.SELL
     }
 
     private fun brokerUnitsToLots(quantity: BigDecimal, lotSize: Int): Long =
@@ -252,14 +283,34 @@ class BrokerPortfolioSyncService(
             .divideToIntegralValue(lotSize.coerceAtLeast(1).toBigDecimal())
             .toLong()
 
-    private fun moneyToBigDecimal(money: ru.tinkoff.piapi.core.models.Money?): BigDecimal =
-        money?.value ?: BigDecimal.ZERO
+    private fun brokerPositions(accountId: String): List<BrokerPortfolioPosition> =
+        operationsService.getPortfolioSync(accountId).positionsList
+            .filter { it.instrumentUid.isNotBlank() }
+            .map { position ->
+                BrokerPortfolioPosition(
+                    instrumentId = position.instrumentUid,
+                    quantity = position.quantity.toBigDecimal(),
+                    averagePositionPrice = position.averagePositionPrice.toBigDecimalValue()
+                )
+            }
+
+    private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
+        .add(BigDecimal.valueOf(nano.toLong(), 9))
+
+    private fun MoneyValue.toBigDecimalValue(): BigDecimal = BigDecimal.valueOf(units)
+        .add(BigDecimal.valueOf(nano.toLong(), 9))
 
     private data class RestorableInstrumentInfo(
         val ticker: String,
         val name: String,
         val instrumentType: String,
         val lotSize: Int
+    )
+
+    private data class BrokerPortfolioPosition(
+        val instrumentId: String,
+        val quantity: BigDecimal,
+        val averagePositionPrice: BigDecimal
     )
 
     private companion object {

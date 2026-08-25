@@ -8,6 +8,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.OrderDirection
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.Signal
@@ -28,6 +29,7 @@ class PositionLifecycleService(
     private val positionProtectionService: PositionProtectionService
 ) {
     private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
+    private val openingInstrumentKeys = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun openPosition(
         accountId: String,
@@ -37,20 +39,51 @@ class PositionLifecycleService(
         strategyName: String,
         strategyExplanation: String
     ): OpenPosition? {
-        if (signal.direction != ru.bolotov.tradebot.strategy.OrderDirection.BUY) {
-            positionLifecycleLogger.error {
-                "Открытие позиции ${marketData.instrumentName} отклонено: " +
-                    "бот поддерживает только покупки, получен сигнал ${signal.direction}"
+        val operationKey = "$accountId:${marketData.instrumentId}"
+        if (!openingInstrumentKeys.add(operationKey)) {
+            positionLifecycleLogger.warn {
+                "Открытие ${marketData.instrumentName} пропущено: операция по инструменту уже выполняется"
             }
             return null
         }
 
-        val direction = OrderDirection.BUY
+        return try {
+            openPositionInternal(
+                accountId = accountId,
+                marketData = marketData,
+                signal = signal,
+                positionSize = positionSize,
+                strategyName = strategyName,
+                strategyExplanation = strategyExplanation
+            )
+        } finally {
+            openingInstrumentKeys.remove(operationKey)
+        }
+    }
+
+    private suspend fun openPositionInternal(
+        accountId: String,
+        marketData: MarketData,
+        signal: Signal,
+        positionSize: PositionSize,
+        strategyName: String,
+        strategyExplanation: String
+    ): OpenPosition? {
+        val side = signal.toPositionSideOrNull() ?: run {
+            positionLifecycleLogger.error {
+                "Открытие позиции ${marketData.instrumentName} отклонено: " +
+                    "неподдерживаемый сигнал ${signal.direction}"
+            }
+            return null
+        }
+
+        val direction = side.openDirection()
         val positionId = UUID.randomUUID().toString()
         val savedEvent = tradeEventService.createPendingOpenEvent(
             positionId = positionId,
             marketData = marketData,
             direction = direction,
+            positionSide = side,
             quantity = positionSize.quantity,
             lotSize = marketData.lotSize,
             totalValue = positionSize.value,
@@ -64,7 +97,8 @@ class PositionLifecycleService(
             instrumentId = marketData.instrumentId,
             quantity = positionSize.quantity,
             price = marketData.currentPrice,
-            direction = "BUY"
+            direction = direction.name,
+            isMarginTrade = side == PositionSide.SHORT
         )
 
         if (!orderResult.success) {
@@ -110,6 +144,7 @@ class PositionLifecycleService(
             instrumentId = marketData.instrumentId,
             instrumentName = marketData.instrumentName,
             direction = direction,
+            side = side,
             entryPrice = entryPrice,
             quantity = executedQuantity,
             lotSize = marketData.lotSize,
@@ -120,7 +155,7 @@ class PositionLifecycleService(
         )
 
         positionLifecycleLogger.info {
-            "Открыта позиция: $direction ${marketData.instrumentName} " +
+            "Открыта позиция: $side ${marketData.instrumentName} " +
                     "($executedQuantity лотов, ${"%.0f".format(totalValue)} RUB, " +
                     "${"%.1f".format(totalValue * BigDecimal(100) / positionSize.value)}% от рассчитанного размера)"
         }
@@ -197,7 +232,8 @@ class PositionLifecycleService(
                     accountId = accountId,
                     instrumentId = position.instrumentId,
                     quantity = remainingQuantity,
-                    direction = closeDirection
+                    direction = closeDirection,
+                    isMarginTrade = position.side == PositionSide.SHORT
                 )
 
                 if (orderResult.success) {
@@ -350,9 +386,22 @@ class PositionLifecycleService(
 
         try {
             val orderResult = if (marketOrder) {
-                orderExecutionService.placeMarketOrder(accountId, position.instrumentId, position.quantity, direction)
+                orderExecutionService.placeMarketOrder(
+                    accountId = accountId,
+                    instrumentId = position.instrumentId,
+                    quantity = position.quantity,
+                    direction = direction,
+                    isMarginTrade = position.side == PositionSide.SHORT
+                )
             } else {
-                orderExecutionService.placeOrder(accountId, position.instrumentId, position.quantity, closePrice, direction)
+                orderExecutionService.placeOrder(
+                    accountId = accountId,
+                    instrumentId = position.instrumentId,
+                    quantity = position.quantity,
+                    price = closePrice,
+                    direction = direction,
+                    isMarginTrade = position.side == PositionSide.SHORT
+                )
             }
 
             if (!orderResult.success) {
@@ -399,7 +448,6 @@ class PositionLifecycleService(
                 "У брокера уже есть активная заявка на закрытие ${position.instrumentName}: " +
                         "${activeCloseOrder.orderId}, status=${activeCloseOrder.executionStatus}"
             }
-            closingPositionIds.add(position.positionId)
             return false
         }
 
@@ -534,16 +582,26 @@ class PositionLifecycleService(
         closePrice: BigDecimal,
         closeCommission: BigDecimal = BigDecimal.ZERO
     ): BigDecimal {
-        val grossPnl = if (position.direction == OrderDirection.BUY) {
-            (closePrice - position.entryPrice) * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
-        } else {
-            (position.entryPrice - closePrice) * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
-        }
+        val grossPnl = when (position.side) {
+            PositionSide.LONG -> (closePrice - position.entryPrice)
+            PositionSide.SHORT -> (position.entryPrice - closePrice)
+        } * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal()
         return grossPnl - position.entryCommission - closeCommission
     }
 
     private fun closeDirection(position: OpenPosition): String =
-        if (position.direction == OrderDirection.BUY) "SELL" else "BUY"
+        if (position.side == PositionSide.LONG) "SELL" else "BUY"
+
+    private fun Signal.toPositionSideOrNull(): PositionSide? = when (direction) {
+        ru.bolotov.tradebot.strategy.OrderDirection.BUY -> PositionSide.LONG
+        ru.bolotov.tradebot.strategy.OrderDirection.SELL -> PositionSide.SHORT
+        ru.bolotov.tradebot.strategy.OrderDirection.HOLD -> null
+    }
+
+    private fun PositionSide.openDirection(): OrderDirection = when (this) {
+        PositionSide.LONG -> OrderDirection.BUY
+        PositionSide.SHORT -> OrderDirection.SELL
+    }
 }
 
 data class ClosePositionResult(

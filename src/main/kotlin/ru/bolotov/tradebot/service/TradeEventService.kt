@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.EventStatus
 import ru.bolotov.tradebot.domain.model.EventType
 import ru.bolotov.tradebot.domain.model.OrderDirection
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.domain.model.TradeEvent
 import ru.bolotov.tradebot.domain.repository.TradeEventRepository
 import ru.bolotov.tradebot.strategy.MarketData
@@ -32,10 +33,9 @@ class TradeEventService(
     fun findOpenEvent(positionId: String): TradeEvent? =
         tradeEventRepository.findByPositionIdAndEventType(positionId, EventType.OPEN)
 
-    fun findUnclosedLongPositions(): List<OpenPosition> =
+    fun findUnclosedPositions(): List<OpenPosition> =
         tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(EventStatus.PROCESSED, EventType.OPEN)
             .asSequence()
-            .filter { it.direction == OrderDirection.BUY }
             .filter { event -> event.positionId != null && !hasCloseEvent(requireNotNull(event.positionId)) }
             .map { event ->
                 OpenPosition(
@@ -43,6 +43,7 @@ class TradeEventService(
                     instrumentId = event.instrumentId,
                     instrumentName = event.instrumentName,
                     direction = event.direction,
+                    side = event.positionSide,
                     entryPrice = event.price,
                     quantity = event.quantity,
                     lotSize = event.lotSize,
@@ -62,6 +63,7 @@ class TradeEventService(
         positionId: String,
         marketData: MarketData,
         direction: OrderDirection,
+        positionSide: PositionSide = PositionSide.LONG,
         quantity: Long,
         lotSize: Int,
         totalValue: BigDecimal,
@@ -73,6 +75,7 @@ class TradeEventService(
             instrumentId = marketData.instrumentId,
             instrumentName = marketData.instrumentName,
             direction = direction,
+            positionSide = positionSide,
             price = marketData.currentPrice,
             quantity = quantity,
             lotSize = lotSize,
@@ -136,6 +139,7 @@ class TradeEventService(
             instrumentId = position.instrumentId,
             instrumentName = position.instrumentName,
             direction = position.direction,
+            positionSide = position.side,
             price = closePrice,
             quantity = position.quantity,
             lotSize = position.lotSize,

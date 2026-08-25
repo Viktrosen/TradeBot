@@ -1,10 +1,13 @@
 package ru.bolotov.tradebot.service
 
+import ru.bolotov.tradebot.broker.*
+
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.PositionProtectionEntity
+import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.domain.model.ProtectionUpdateStatus
 import ru.bolotov.tradebot.domain.repository.PositionProtectionRepository
 import ru.tinkoff.piapi.contract.v1.Quotation
@@ -12,8 +15,8 @@ import ru.tinkoff.piapi.contract.v1.StopOrder
 import ru.tinkoff.piapi.contract.v1.StopOrderDirection
 import ru.tinkoff.piapi.contract.v1.StopOrderStatusOption
 import ru.tinkoff.piapi.contract.v1.StopOrderType
-import ru.tinkoff.piapi.core.InstrumentsService
-import ru.tinkoff.piapi.core.StopOrdersService
+import ru.ttech.piapi.core.InstrumentsServiceSync
+import ru.ttech.piapi.core.StopOrdersServiceSync
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -25,8 +28,8 @@ private val protectionLogger = KotlinLogging.logger {}
 
 @Service
 class PositionProtectionService(
-    private val stopOrdersService: StopOrdersService,
-    private val instrumentsService: InstrumentsService,
+    private val stopOrdersService: StopOrdersServiceSync,
+    private val instrumentsService: InstrumentsServiceSync,
     private val positionProtectionRepository: PositionProtectionRepository,
     private val positionSizingConfig: PositionSizingConfig,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
@@ -273,11 +276,23 @@ class PositionProtectionService(
 
     private fun calculateProtectionPrices(position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionPrices {
         val priceIncrement = getPriceIncrement(position.instrumentId)
-        val stopLossPrice = position.entryPrice.multiply(BigDecimal.ONE.subtract(stopLossPercent.toBigDecimal()))
-            .roundToIncrement(priceIncrement, RoundingMode.DOWN)
-        val takeProfitPrice = position.entryPrice.multiply(BigDecimal.ONE.add(takeProfitPercent.toBigDecimal()))
-            .roundToIncrement(priceIncrement, RoundingMode.UP)
+        val (stopLossPrice, takeProfitPrice) = when (position.side) {
+            PositionSide.LONG -> {
+                position.entryPrice.multiply(BigDecimal.ONE.subtract(stopLossPercent.toBigDecimal()))
+                    .roundToIncrement(priceIncrement, RoundingMode.DOWN) to
+                    position.entryPrice.multiply(BigDecimal.ONE.add(takeProfitPercent.toBigDecimal()))
+                        .roundToIncrement(priceIncrement, RoundingMode.UP)
+            }
+
+            PositionSide.SHORT -> {
+                position.entryPrice.multiply(BigDecimal.ONE.add(stopLossPercent.toBigDecimal()))
+                    .roundToIncrement(priceIncrement, RoundingMode.UP) to
+                    position.entryPrice.multiply(BigDecimal.ONE.subtract(takeProfitPercent.toBigDecimal()))
+                        .roundToIncrement(priceIncrement, RoundingMode.DOWN)
+            }
+        }
         require(stopLossPrice > BigDecimal.ZERO) { "Цена стоп-лосса должна быть больше нуля" }
+        require(takeProfitPrice > BigDecimal.ZERO) { "Цена тейк-профита должна быть больше нуля" }
         return ProtectionPrices(stopLossPrice, takeProfitPrice)
     }
 
@@ -310,11 +325,27 @@ class PositionProtectionService(
         return quotation.toBigDecimal().takeIf { it > BigDecimal.ZERO } ?: error("Для $instrumentId не задан шаг цены")
     }
 
-    private fun createStopOrder(accountId: String, position: OpenPosition, price: BigDecimal, type: StopOrderType): String =
-        stopOrdersService.postStopOrderGoodTillCancelSync(
-            position.instrumentId, position.quantity, price.toQuotation(), price.toQuotation(),
-            StopOrderDirection.STOP_ORDER_DIRECTION_SELL, accountId, type, UUID.randomUUID()
+    private fun createStopOrder(
+        accountId: String,
+        position: OpenPosition,
+        price: BigDecimal,
+        type: StopOrderType
+    ): String = stopOrdersService.postStopOrderGoodTillCancelSync(
+            position.instrumentId,
+            position.quantity,
+            price.toQuotation(),
+            price.toQuotation(),
+            position.stopOrderDirection(),
+            accountId,
+            type,
+            UUID.randomUUID(),
+            confirmMarginTrade = position.side == PositionSide.SHORT
         )
+
+    private fun OpenPosition.stopOrderDirection(): StopOrderDirection = when (side) {
+        PositionSide.LONG -> StopOrderDirection.STOP_ORDER_DIRECTION_SELL
+        PositionSide.SHORT -> StopOrderDirection.STOP_ORDER_DIRECTION_BUY
+    }
 
     private fun cancelStopOrder(accountId: String, orderId: String, instrumentName: String): Boolean = runCatching {
         stopOrdersService.cancelStopOrderSync(accountId, orderId)
