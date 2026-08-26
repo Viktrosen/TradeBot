@@ -169,6 +169,8 @@ flowchart LR
 | `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | RabbitMQ |
 | `INVEST_TOKEN` | токен T-Invest API |
 | `INVEST_CONNECTOR_SANDBOX_ENABLED` | `true` для песочницы, `false` для production; в production включаются брокерские защитные заявки |
+| `INVEST_CONNECTOR_APP_NAME` | имя приложения, передаваемое T-Invest API |
+| `BROKER_ACCOUNT_NAME` | обязательное точное имя открытого реального счёта; бот получает полный список счетов и выбирает ровно один совпадающий, иначе не запускает торговлю |
 | `INTERNAL_API_USERNAME`, `INTERNAL_API_PASSWORD` | авторизация внутреннего API |
 | `AI_ENABLED` | включает AI-подтверждение (`false` по умолчанию) |
 | `OPENROUTER_API_KEY` | секретный ключ OpenRouter |
