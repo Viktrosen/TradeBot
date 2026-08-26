@@ -173,6 +173,7 @@ flowchart LR
 | `OPENROUTER_API_KEY` | секретный ключ OpenRouter |
 | `OPENROUTER_MODEL` | модель, например `openai/gpt-4o` или `openrouter/free` |
 | `OPENROUTER_TIMEOUT_MS` | таймаут запроса к модели |
+| `AI_OPENROUTER_RATE_LIMIT_COOLDOWN_MS` | пауза после HTTP 429 от OpenRouter; по умолчанию 60 секунд |
 | `AI_MIN_BUY_CONFIDENCE` | минимальная уверенность AI для подтверждения покупки; по умолчанию `0.75` |
 | `AI_MIN_PROFIT_SELL_CONFIDENCE` | минимальная уверенность AI для продажи позиции в прибыли; по умолчанию `0.70` |
 | `AI_MIN_LOSS_SELL_CONFIDENCE` | минимальная уверенность AI для продажи позиции в убытке; по умолчанию `0.85` |

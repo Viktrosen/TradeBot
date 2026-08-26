@@ -1,7 +1,5 @@
 package ru.bolotov.tradebot.config
 
-import ru.bolotov.tradebot.broker.*
-
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean

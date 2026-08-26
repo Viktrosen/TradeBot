@@ -1,7 +1,5 @@
 package ru.bolotov.tradebot.broker
 
-import ru.bolotov.tradebot.broker.*
-
 import com.google.protobuf.Timestamp
 import ru.tinkoff.piapi.contract.v1.CancelOrderRequest
 import ru.tinkoff.piapi.contract.v1.CancelStopOrderRequest

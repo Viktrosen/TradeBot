@@ -590,31 +590,36 @@ class TradingBotService(
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
             val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
-            val patternResult = if (strategyManager.isCandlestickStrategyActive() && marketData != null) {
-                candlestickPatternStrategy.analyzePatternWithCandles(
-                    instrumentUid = lastPrice.instrumentUid,
-                    confirmationPrice = marketData.currentPrice
-                )
-            } else {
+            if (marketData == null) {
                 null
+            } else {
+                addCandlestickContext(marketData)
             }
-
-            logger.info {
-                "Свечной анализ для ${lastPrice.instrumentUid}: " +
-                        "pattern=${patternResult?.pattern}, direction=${patternResult?.direction}, confidence=${patternResult?.confidence}"
-            }
-            marketData?.copy(candlestickPattern = patternResult)
         } catch (e: Exception) {
             logger.error(e) { "Ошибка обогащения рыночных данных для ${lastPrice.instrumentUid}" }
             null
         }
     }
 
-    private fun buildSignalFlow(marketData: MarketData) = flow {
-        logger.info {
-            "marketData для ${marketData.instrumentName}: candlestickPattern=${marketData.candlestickPattern?.direction}"
+    private suspend fun addCandlestickContext(marketData: MarketData): MarketData {
+        if (!strategyManager.isCandlestickStrategyActive()) {
+            logger.debug { "Свечной анализ пропущен для ${marketData.instrumentName}: активна другая стратегия" }
+            return marketData
         }
 
+        val patternResult = candlestickPatternStrategy.analyzePatternWithCandles(
+            instrumentUid = marketData.instrumentId,
+            confirmationPrice = marketData.currentPrice
+        )
+        logger.info {
+            "Свечной анализ для ${marketData.instrumentName}: " +
+                "паттерн=${patternResult.pattern}, сигнал=${patternResult.direction}, " +
+                "уверенность=${patternResult.confidence}"
+        }
+        return marketData.copy(candlestickPattern = patternResult)
+    }
+
+    private fun buildSignalFlow(marketData: MarketData) = flow {
         val position = _openPositions.value[marketData.instrumentId]
         val riskCloseReason = position?.let {
             checkStopLossOrTakeProfit(it, marketData.currentPrice)
@@ -628,10 +633,7 @@ class TradingBotService(
 
         val strategy = strategyManager.getCurrentStrategy()
         val signal = strategy.analyze(marketData)
-        logger.info {
-            "Анализ: инструмент=${marketData.instrumentName}, паттерн=${marketData.candlestickPattern?.direction}, " +
-                    "сигнал=${signal.direction}, уверенность=${signal.confidence}"
-        }
+        logStrategyAnalysis(strategy, marketData, signal)
 
         if (signal.direction == OrderDirection.SELL) {
             val currentPosition = _openPositions.value[marketData.instrumentId]
@@ -683,7 +685,7 @@ class TradingBotService(
                 position = position,
                 reason = CloseReason.STRATEGY_SIGNAL,
                 aiResult = aiResult,
-                sourceCandleKey = marketData.candlestickPattern?.candleKey
+                sourceCandleKey = marketData.signalCandleKey
             )
         )
     }
@@ -733,8 +735,22 @@ class TradingBotService(
     }
 
     private fun shouldProcessStrategyCandle(marketData: MarketData): Boolean {
-        val candleKey = marketData.candlestickPattern?.candleKey ?: return true
+        val candleKey = marketData.signalCandleKey ?: return true
         return processedStrategyCandles.put(marketData.instrumentId, candleKey) != candleKey
+    }
+
+    private fun logStrategyAnalysis(
+        strategy: TradingStrategy,
+        marketData: MarketData,
+        signal: ru.bolotov.tradebot.strategy.Signal
+    ) {
+        val candleContext = marketData.candlestickPattern
+            ?.let { ", свеча=${it.candleKey}, паттерн=${it.pattern}" }
+            ?: ", свеча=${marketData.strategyCandleKey}"
+        logger.info {
+            "Анализ ${strategy.name}: инструмент=${marketData.instrumentName}$candleContext, " +
+                "сигнал=${signal.direction}, уверенность=${signal.confidence}"
+        }
     }
 
     private fun canCloseByStrategy(
@@ -775,7 +791,7 @@ class TradingBotService(
         position: OpenPosition,
         marketData: MarketData
     ): Boolean {
-        val candleKey = marketData.candlestickPattern?.candleKey ?: return false
+        val candleKey = marketData.signalCandleKey ?: return false
         val previousCandleKey = pendingLossExitConfirmations.put(position.instrumentId, candleKey)
         if (previousCandleKey == null) {
             logger.info {
@@ -789,6 +805,9 @@ class TradingBotService(
         }
         return true
     }
+
+    private val MarketData.signalCandleKey: String?
+        get() = candlestickPattern?.candleKey ?: strategyCandleKey
 
     private fun synchronizePositionForSell(marketData: MarketData): OpenPosition? {
         val restoredPosition = brokerPortfolioSyncService.synchronizeLongPositionForSell(

@@ -14,6 +14,8 @@ import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
 import ru.bolotov.tradebot.strategy.TradingStrategy
 import java.math.BigDecimal
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 
 private val aiFilterLogger = KotlinLogging.logger {}
 
@@ -26,8 +28,10 @@ class AiTradeSignalFilter(
     @Value("\${ai.openrouter.model:openai/gpt-4o}") private val model: String,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
-    @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
+    @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double,
+    @Value("\${ai.openrouter.rate-limit-cooldown-ms:60000}") private val rateLimitCooldownMs: Long
 ) {
+    private val rateLimitedUntil = AtomicReference<Instant?>(null)
 
     init {
         when {
@@ -51,6 +55,7 @@ class AiTradeSignalFilter(
             aiFilterLogger.error { "AI-фильтр включён, но OPENROUTER_API_KEY не задан; сигнал отклонён" }
             return AiFilterResult(approved = false)
         }
+        if (isRateLimited()) return AiFilterResult(approved = false)
 
         return try {
             val startedAt = System.nanoTime()
@@ -65,6 +70,9 @@ class AiTradeSignalFilter(
             )
             logDecision(marketData, signal, decision, requiredConfidence, result.approved, durationMs)
             result
+        } catch (_: AiRateLimitException) {
+            blockRequestsAfterRateLimit()
+            AiFilterResult(approved = false)
         } catch (error: Exception) {
             aiFilterLogger.warn(error) {
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
@@ -88,6 +96,9 @@ class AiTradeSignalFilter(
             .exchange { _, response ->
                 response.body.bufferedReader().use { reader ->
                     val responseBody = reader.readText()
+                    if (response.statusCode.value() == HTTP_TOO_MANY_REQUESTS) {
+                        throw AiRateLimitException()
+                    }
                     if (response.statusCode.isError) {
                         error("OpenRouter вернул HTTP ${response.statusCode.value()}")
                     }
@@ -170,6 +181,25 @@ class AiTradeSignalFilter(
         }
     }
 
+    private fun isRateLimited(): Boolean {
+        val blockedUntil = rateLimitedUntil.get() ?: return false
+        if (!Instant.now().isBefore(blockedUntil)) {
+            rateLimitedUntil.compareAndSet(blockedUntil, null)
+            return false
+        }
+        aiFilterLogger.debug { "AI-фильтр временно не вызывает OpenRouter до $blockedUntil после HTTP 429" }
+        return true
+    }
+
+    private fun blockRequestsAfterRateLimit() {
+        val cooldownMs = rateLimitCooldownMs.coerceAtLeast(MIN_RATE_LIMIT_COOLDOWN_MS)
+        val blockedUntil = Instant.now().plusMillis(cooldownMs)
+        rateLimitedUntil.set(blockedUntil)
+        aiFilterLogger.warn {
+            "AI-фильтр получил HTTP 429; запросы к OpenRouter приостановлены до $blockedUntil"
+        }
+    }
+
     private fun requiredConfidence(
         signal: Signal,
         position: OpenPosition?,
@@ -192,6 +222,8 @@ class AiTradeSignalFilter(
     private companion object {
         const val MAX_COMPLETION_TOKENS = 180
         const val NANOS_IN_MILLISECOND = 1_000_000L
+        const val HTTP_TOO_MANY_REQUESTS = 429
+        const val MIN_RATE_LIMIT_COOLDOWN_MS = 1_000L
 
         const val SYSTEM_PROMPT = """
             Ты — консервативный фильтр подтверждения сигналов торгового бота.
@@ -212,7 +244,6 @@ class AiTradeSignalFilter(
             Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
 
             REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
-            Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
             Поле reason пиши на русском языке.
             Всегда возвращай только один валидный JSON-объект без Markdown, пояснений и текста до или после JSON.
             Ответ обязан начинаться с { и заканчиваться }.
@@ -222,6 +253,8 @@ class AiTradeSignalFilter(
         val JSON_OBJECT_RESPONSE_FORMAT = mapOf("type" to "json_object")
     }
 }
+
+private class AiRateLimitException : RuntimeException("OpenRouter вернул HTTP 429")
 
 data class AiFilterResult(
     val approved: Boolean,

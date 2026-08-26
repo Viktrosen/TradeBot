@@ -1,9 +1,11 @@
 package ru.bolotov.tradebot.strategy
 
-import ru.bolotov.tradebot.broker.*
-
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Component
+import ru.bolotov.tradebot.broker.getCandlesSync
+import ru.bolotov.tradebot.broker.getInstrumentByUIDSync
+import ru.bolotov.tradebot.broker.getLastPricesSync
+import ru.bolotov.tradebot.broker.getShareByUidSync
 import ru.ttech.piapi.core.MarketDataServiceSync
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
@@ -14,7 +16,6 @@ import java.math.MathContext
 import java.math.RoundingMode
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.abs
 
 private val logger = KotlinLogging.logger {}
 
@@ -38,13 +39,11 @@ class MarketDataProvider(
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
 
-            // 1. Последняя цена
             val lastPrices = marketDataService.getLastPricesSync(listOf(instrumentUid))
             val lastPrice = lastPrices.firstOrNull()
                 ?: throw IllegalStateException("Нет данных о последней цене для $displayName")
             val currentPrice = quotationToBigDecimal(lastPrice.price)
 
-            // 2. Свечи за последние 3 дня
             val now = Instant.now()
             val threeDaysAgo = now.minusSeconds(259200)
             val candles = marketDataService.getCandlesSync(
@@ -60,7 +59,6 @@ class MarketDataProvider(
             val currentVolume = candles.lastOrNull()?.volume ?: 0L
             val avgVolume = if (volumes.isNotEmpty()) volumes.average().toLong() else 0L
 
-            // 3. Индикаторы
             val ema5Series = calculateEMASeries(closes, 5)
             val ema21Series = calculateEMASeries(closes, 21)
             val ema5 = ema5Series?.lastOrNull()
@@ -68,7 +66,7 @@ class MarketDataProvider(
             val rsi = calculateRSI(closes, 14)
             val macd = calculateMACD(closes)
             val bollingerBands = calculateBollingerBands(closes, currentPrice)
-            val atr = calculateATR(candles)  // 🆕
+            val atr = calculateATR(candles)
 
             logger.info {
                 "$displayName: цена=${formatIndicator(currentPrice)}, EMA5=${formatIndicator(ema5)}, " +
@@ -87,11 +85,12 @@ class MarketDataProvider(
                 rsi = rsi,
                 macd = macd,
                 bollingerBands = bollingerBands,
-                atr = atr,  // 🆕
+                atr = atr,
                 volume = currentVolume,
                 avgVolume = avgVolume,
                 spread = BigDecimal.valueOf(0.1),
-                volatility = calculateVolatility(closes)
+                volatility = calculateVolatility(closes),
+                strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey)
             )
         } catch (e: Exception) {
             logger.error(e) { "Ошибка получения данных для $instrumentUid" }
@@ -114,7 +113,6 @@ class MarketDataProvider(
         }
     }
 
-    // 🆕 Расчёт ATR (Average True Range)
     private fun calculateATR(candles: List<HistoricCandle>, period: Int = 14): BigDecimal? {
         if (period <= 0) return null
         if (candles.size < period + 1) return null
@@ -282,8 +280,11 @@ class MarketDataProvider(
 
     private fun isClosed(candle: HistoricCandle, now: Instant, intervalSeconds: Long): Boolean {
         val candleStart = Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
-        return !candleStart.plusSeconds(intervalSeconds).isAfter(now)
+        return candle.isComplete && !candleStart.plusSeconds(intervalSeconds).isAfter(now)
     }
+
+    private fun strategyCandleKey(candle: HistoricCandle): String =
+        "M5:${candle.time.seconds}:${candle.time.nanos}"
 
     private fun formatIndicator(value: BigDecimal?): String = value
         ?.setScale(4, RoundingMode.HALF_UP)

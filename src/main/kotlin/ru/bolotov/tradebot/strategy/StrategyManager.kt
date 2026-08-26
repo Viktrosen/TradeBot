@@ -13,7 +13,7 @@ class StrategyManager(
     private val bbStrategy: BollingerBandsStrategy,
     private val votingStrategy: VotingStrategy,
     private val confirmationStrategy: ConfirmationStrategy,
-    private val candlestickPatternStrategy: CandlestickPatternStrategy  // ← исправлено
+    private val candlestickPatternStrategy: CandlestickPatternStrategy
 ) {
     private var currentStrategy: TradingStrategy = crossEmaStrategy
 

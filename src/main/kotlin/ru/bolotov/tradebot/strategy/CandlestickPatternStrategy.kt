@@ -1,7 +1,5 @@
 package ru.bolotov.tradebot.strategy
 
-import ru.bolotov.tradebot.broker.*
-
 /*
  * [Получение только закрытых свечей]
  *                 |
@@ -26,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.springframework.stereotype.Component
+import ru.bolotov.tradebot.broker.getCandlesSync
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.ttech.piapi.core.MarketDataServiceSync

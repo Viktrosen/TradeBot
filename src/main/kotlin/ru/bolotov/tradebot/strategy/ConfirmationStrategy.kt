@@ -62,43 +62,68 @@ class ConfirmationStrategy : ConfigurableStrategy {
         val totalIndicators = signals.size
 
         return when {
-            // Все согласны → высокая уверенность
             allBuy -> {
-                val avgConfidence = signals.values.map { it.confidence }.average()
-                Signal(
-                    OrderDirection.BUY,
-                    minOf(avgConfidence * 1.2, 0.95),
-                    buildReason(signals, "BUY", "ВСЕ $totalIndicators/$totalIndicators")
+                consensusSignal(
+                    direction = OrderDirection.BUY,
+                    signals = signals,
+                    confidence = boostedAverageConfidence(signals.values),
+                    strength = "ВСЕ $totalIndicators/$totalIndicators"
                 )
             }
+
             allSell -> {
-                val avgConfidence = signals.values.map { it.confidence }.average()
-                Signal(
-                    OrderDirection.SELL,
-                    minOf(avgConfidence * 1.2, 0.95),
-                    buildReason(signals, "SELL", "ВСЕ $totalIndicators/$totalIndicators")
+                consensusSignal(
+                    direction = OrderDirection.SELL,
+                    signals = signals,
+                    confidence = boostedAverageConfidence(signals.values),
+                    strength = "ВСЕ $totalIndicators/$totalIndicators"
                 )
             }
-            // 3 из 4 или 2 из 3
+
             buyCount >= totalIndicators - 1 && buyCount > sellCount -> {
-                val avgConfidence = signals.values.filter { it.direction == OrderDirection.BUY }.map { it.confidence }.average()
-                Signal(
-                    OrderDirection.BUY,
-                    avgConfidence,
-                    buildReason(signals, "BUY", "$buyCount/$totalIndicators")
+                consensusSignal(
+                    direction = OrderDirection.BUY,
+                    signals = signals,
+                    confidence = averageConfidence(signals.values, OrderDirection.BUY),
+                    strength = "$buyCount/$totalIndicators"
                 )
             }
+
             sellCount >= totalIndicators - 1 && sellCount > buyCount -> {
-                val avgConfidence = signals.values.filter { it.direction == OrderDirection.SELL }.map { it.confidence }.average()
-                Signal(
-                    OrderDirection.SELL,
-                    avgConfidence,
-                    buildReason(signals, "SELL", "$sellCount/$totalIndicators")
+                consensusSignal(
+                    direction = OrderDirection.SELL,
+                    signals = signals,
+                    confidence = averageConfidence(signals.values, OrderDirection.SELL),
+                    strength = "$sellCount/$totalIndicators"
                 )
             }
+
             else -> Signal.HOLD
         }
     }
+
+    private fun consensusSignal(
+        direction: OrderDirection,
+        signals: Map<String, Signal>,
+        confidence: Double,
+        strength: String
+    ): Signal = Signal(
+        direction = direction,
+        confidence = confidence,
+        reason = buildReason(signals, direction.name, strength)
+    )
+
+    private fun boostedAverageConfidence(signals: Collection<Signal>): Double =
+        (averageConfidence(signals) * CONSENSUS_CONFIDENCE_MULTIPLIER)
+            .coerceAtMost(MAX_CONSENSUS_CONFIDENCE)
+
+    private fun averageConfidence(
+        signals: Collection<Signal>,
+        direction: OrderDirection? = null
+    ): Double = signals.asSequence()
+        .filter { direction == null || it.direction == direction }
+        .map(Signal::confidence)
+        .average()
 
     private fun analyzeEMA(data: MarketData): Signal {
         val ema5 = data.ema5 ?: return Signal.HOLD
@@ -219,5 +244,10 @@ class ConfirmationStrategy : ConfigurableStrategy {
             }
             signal.reason?.let { append("\nПричина: $it") }
         }
+    }
+
+    private companion object {
+        const val CONSENSUS_CONFIDENCE_MULTIPLIER = 1.2
+        const val MAX_CONSENSUS_CONFIDENCE = 0.95
     }
 }

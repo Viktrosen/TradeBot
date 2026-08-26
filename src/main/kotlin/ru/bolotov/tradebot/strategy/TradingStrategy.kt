@@ -42,6 +42,7 @@ data class MarketData(
     val avgVolume: Long,
     val spread: BigDecimal,
     val volatility: Double,
+    val strategyCandleKey: String? = null,
     val candlestickPattern: CandlestickPatternStrategy.PatternResult? = null
 )
 
