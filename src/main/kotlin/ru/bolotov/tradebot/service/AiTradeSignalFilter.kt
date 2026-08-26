@@ -9,6 +9,7 @@ import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.PositionSide
 import org.springframework.web.client.RestClient
+import ru.bolotov.tradebot.service.data.AiFilterResult
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
@@ -256,12 +257,6 @@ class AiTradeSignalFilter(
 
 private class AiRateLimitException : RuntimeException("OpenRouter вернул HTTP 429")
 
-data class AiFilterResult(
-    val approved: Boolean,
-    val explanation: String? = null,
-    val confidence: Double? = null
-)
-
 private enum class AiAction {
     APPROVE,
     REJECT,
@@ -280,13 +275,6 @@ private data class AiDecision(
     val confidence: Double,
     val reason: String
 )
-
-private val Signal.actionDescription: String
-    get() = when (direction) {
-        OrderDirection.BUY -> "покупки"
-        OrderDirection.SELL -> "продажи"
-        OrderDirection.HOLD -> "сделки"
-    }
 
 private data class AiTradeContext(
     val strategy: AiStrategyContext,
@@ -382,18 +370,3 @@ private data class AiPositionContext(
         )
     }
 }
-
-private fun OpenPosition.currentPnlPercent(currentPrice: BigDecimal): Double =
-    priceDifference(currentPrice)
-        .divide(entryPrice, PNL_SCALE, java.math.RoundingMode.HALF_UP)
-        .toDouble()
-
-private fun OpenPosition.hasUnrealizedLoss(currentPrice: BigDecimal): Boolean =
-    priceDifference(currentPrice) < BigDecimal.ZERO
-
-private fun OpenPosition.priceDifference(currentPrice: BigDecimal): BigDecimal = when (side) {
-    PositionSide.LONG -> currentPrice - entryPrice
-    PositionSide.SHORT -> entryPrice - currentPrice
-}
-
-private const val PNL_SCALE = 8

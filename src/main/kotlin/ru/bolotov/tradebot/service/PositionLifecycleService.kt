@@ -592,16 +592,6 @@ class PositionLifecycleService(
     private fun closeDirection(position: OpenPosition): String =
         if (position.side == PositionSide.LONG) "SELL" else "BUY"
 
-    private fun Signal.toPositionSideOrNull(): PositionSide? = when (direction) {
-        ru.bolotov.tradebot.strategy.OrderDirection.BUY -> PositionSide.LONG
-        ru.bolotov.tradebot.strategy.OrderDirection.SELL -> PositionSide.SHORT
-        ru.bolotov.tradebot.strategy.OrderDirection.HOLD -> null
-    }
-
-    private fun PositionSide.openDirection(): OrderDirection = when (this) {
-        PositionSide.LONG -> OrderDirection.BUY
-        PositionSide.SHORT -> OrderDirection.SELL
-    }
 }
 
 data class ClosePositionResult(

@@ -36,6 +36,9 @@ import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.bolotov.tradebot.strategy.TradingStrategy
+import ru.bolotov.tradebot.service.data.AiFilterResult
+import ru.bolotov.tradebot.service.data.BotSignal
+import ru.bolotov.tradebot.service.data.CloseReason
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.LastPriceInstrument
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
@@ -806,9 +809,6 @@ class TradingBotService(
         return true
     }
 
-    private val MarketData.signalCandleKey: String?
-        get() = candlestickPattern?.candleKey ?: strategyCandleKey
-
     private fun synchronizePositionForSell(marketData: MarketData): OpenPosition? {
         val restoredPosition = brokerPortfolioSyncService.synchronizeLongPositionForSell(
             accountId = accountId,
@@ -975,37 +975,4 @@ class TradingBotService(
     private companion object {
         const val MIN_SCHEDULER_DELAY_MS = 1_000L
     }
-}
-
-private sealed class BotSignal {
-    data class Trade(
-        val marketData: MarketData,
-        val signal: ru.bolotov.tradebot.strategy.Signal,
-        val strategyName: String,
-        val strategyExplanation: String,
-        val aiResult: AiFilterResult
-    ) : BotSignal()
-
-    data class Close(
-        val position: OpenPosition,
-        val reason: CloseReason,
-        val aiResult: AiFilterResult? = null,
-        val sourceCandleKey: String? = null
-    ) : BotSignal()
-}
-
-private fun String.withAiExplanation(aiResult: AiFilterResult): String =
-    aiResult.toEventExplanation()?.let { "$this\n$it" } ?: this
-
-private fun AiFilterResult.toEventExplanation(): String? = explanation?.let { reason ->
-    "AI: $reason${confidence?.let { "; уверенность: ${(it * 100).toInt()}%" }.orEmpty()}"
-}
-
-private fun String.aiExplanation(): String? =
-    lineSequence().firstOrNull { it.startsWith("AI: ") }?.removePrefix("AI: ")
-
-private enum class CloseReason(val eventReason: String) {
-    STOP_LOSS("STOP_LOSS"),
-    TAKE_PROFIT("TAKE_PROFIT"),
-    STRATEGY_SIGNAL("SIGNAL_CLOSE")
 }

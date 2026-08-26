@@ -51,6 +51,7 @@ flowchart LR
 |---|---|---|
 | `api/InternalCommandController` | Внутренний HTTP API для gateway | `start`, `stop`, `getDashboard`, `closePosition`, `closeAllPositions`, настройка стратегий, рисков и инструментов |
 | `service/TradingBotService` | Оркестратор работы бота и состояние открытых позиций | `buildSignalFlow()` сначала проверяет риск-выход, затем обрабатывает стратегию один раз на закрытую свечу; `confirmLossExitOnNextCandle()` подтверждает убыточный выход; `registerReentryCooldown()` блокирует повторный вход; `emergencyStopAndCloseAllPositions()` останавливает бота и закрывает портфель |
+| `service/data` | Публичные модели взаимодействия сервисного слоя | `BotSignal` описывает команду открытия или закрытия позиции; `AiFilterResult` хранит результат AI-проверки; `ShortRiskCheck` — результат проверки допуска к шорту |
 | `strategy/StrategyManager` | Хранит и переключает активную стратегию | `getCurrentStrategy()` возвращает стратегию для очередного анализа |
 | `strategy/CandlestickPatternStrategy` | Ищет паттерны только на закрытых свечах и применяет технические фильтры | `analyzePatternWithCandles()` загружает закрытые свечи, проверяет паттерн, EMA(200), RSI(14), объём и подтверждение ценой; `registerSignalExpiry()` удаляет сигнал через две свечи; `setTimeframe()` очищает кэш и активные сигналы |
 | `strategy/MarketDataProvider` | Собирает цену, EMA, RSI, MACD, Bollinger Bands, ATR и объём | `fetchMarketData()` возвращает единый контекст для стратегии |

@@ -382,8 +382,6 @@ class PositionProtectionService(
     private fun BigDecimal.roundToIncrement(increment: BigDecimal, roundingMode: RoundingMode): BigDecimal =
         divide(increment, 0, roundingMode).multiply(increment)
 
-    private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units).add(BigDecimal.valueOf(nano.toLong(), 9))
-
     private fun BigDecimal.toQuotation(): Quotation {
         val units = toLong()
         val nano = remainder(BigDecimal.ONE).movePointRight(9).setScale(0, RoundingMode.HALF_UP).toInt()

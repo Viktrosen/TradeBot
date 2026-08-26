@@ -210,9 +210,6 @@ class BrokerProtectionReconciliationService(
         reconciliationLogger.debug { "Сверка защитных заявок завершена: $reason" }
     }
 
-    private fun MoneyValue.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
-        .add(BigDecimal.valueOf(nano.toLong(), 9))
-
     private fun currentPositions(): Collection<OpenPosition> = positionsProvider?.invoke() ?: emptyList()
 
     private suspend fun closeShortsWithUnsafeMargin(
@@ -250,9 +247,6 @@ class BrokerProtectionReconciliationService(
         }
         return positions.filterNot { it.positionId in closedIds }
     }
-
-    private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
-        .add(BigDecimal.valueOf(nano.toLong(), 9))
 
     private fun matchesCloseDirection(direction: String, position: OpenPosition): Boolean =
         when (position.side) {

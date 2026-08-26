@@ -81,9 +81,3 @@ class PortfolioSnapshotService(
         }
     }
 }
-
-private fun ru.tinkoff.piapi.contract.v1.MoneyValue.toBigDecimal(): BigDecimal =
-    BigDecimal.valueOf(units).add(BigDecimal.valueOf(nano.toLong(), 9))
-
-private fun ru.tinkoff.piapi.contract.v1.Quotation.toBigDecimal(): BigDecimal =
-    BigDecimal.valueOf(units).add(BigDecimal.valueOf(nano.toLong(), 9))

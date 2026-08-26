@@ -273,11 +273,6 @@ class BrokerPortfolioSyncService(
         return null
     }
 
-    private fun PositionSide.openDirection(): OrderDirection = when (this) {
-        PositionSide.LONG -> OrderDirection.BUY
-        PositionSide.SHORT -> OrderDirection.SELL
-    }
-
     private fun brokerUnitsToLots(quantity: BigDecimal, lotSize: Int): Long =
         quantity.abs()
             .divideToIntegralValue(lotSize.coerceAtLeast(1).toBigDecimal())
@@ -290,15 +285,9 @@ class BrokerPortfolioSyncService(
                 BrokerPortfolioPosition(
                     instrumentId = position.instrumentUid,
                     quantity = position.quantity.toBigDecimal(),
-                    averagePositionPrice = position.averagePositionPrice.toBigDecimalValue()
+                    averagePositionPrice = position.averagePositionPrice.toBigDecimal()
                 )
             }
-
-    private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
-        .add(BigDecimal.valueOf(nano.toLong(), 9))
-
-    private fun MoneyValue.toBigDecimalValue(): BigDecimal = BigDecimal.valueOf(units)
-        .add(BigDecimal.valueOf(nano.toLong(), 9))
 
     private data class RestorableInstrumentInfo(
         val ticker: String,

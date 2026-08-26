@@ -1,6 +1,5 @@
 package ru.bolotov.tradebot.broker
 
-import com.google.protobuf.Timestamp
 import ru.tinkoff.piapi.contract.v1.CancelOrderRequest
 import ru.tinkoff.piapi.contract.v1.CancelStopOrderRequest
 import ru.tinkoff.piapi.contract.v1.CandleInterval
@@ -236,8 +235,3 @@ fun MarketDataServiceSync.getCandlesSync(
         .setInterval(interval)
         .build()
 ).candlesList
-
-private fun Instant.toTimestamp(): Timestamp = Timestamp.newBuilder()
-    .setSeconds(epochSecond)
-    .setNanos(nano)
-    .build()

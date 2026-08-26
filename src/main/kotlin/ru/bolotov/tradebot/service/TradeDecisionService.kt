@@ -4,6 +4,7 @@ import ru.bolotov.tradebot.broker.*
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.service.data.ShortRiskCheck
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.OrderDirection
 import ru.bolotov.tradebot.domain.model.PositionSide

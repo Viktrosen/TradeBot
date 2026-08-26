@@ -6,8 +6,8 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
-import ru.tinkoff.piapi.contract.v1.MoneyValue
-import ru.tinkoff.piapi.contract.v1.Quotation
+import ru.bolotov.tradebot.service.data.MarginSnapshot
+import ru.bolotov.tradebot.service.data.ShortRiskCheck
 import ru.ttech.piapi.core.InstrumentsServiceSync
 import ru.ttech.piapi.core.UsersServiceSync
 import java.math.BigDecimal
@@ -68,22 +68,3 @@ class ShortTradingRiskService(
     }
 
 }
-
-private fun MoneyValue.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
-    .add(BigDecimal.valueOf(nano.toLong(), 9))
-
-private fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
-    .add(BigDecimal.valueOf(nano.toLong(), 9))
-
-sealed interface ShortRiskCheck {
-    data class Allowed(val margin: MarginSnapshot) : ShortRiskCheck
-    data class Rejected(val reason: String) : ShortRiskCheck
-}
-
-data class MarginSnapshot(
-    val fundsSufficiencyLevel: BigDecimal,
-    val liquidPortfolio: BigDecimal,
-    val startingMargin: BigDecimal,
-    val minimalMargin: BigDecimal,
-    val missingFunds: BigDecimal
-)
