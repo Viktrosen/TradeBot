@@ -14,51 +14,15 @@ class TradingStrategyConfigurationService(
     private val strategyConfigPersistenceService: StrategyConfigPersistenceService
 ) {
 
-    suspend fun loadLastConfiguration() {
+    suspend fun loadConfigurations() {
         try {
-            when (val config = strategyConfigPersistenceService.loadLastConfiguration()) {
-                is LoadedConfig.Simple -> {
-                    strategyManager.switchToSimpleStrategy(config.name)
-                    strategyConfigurationLogger.info { "Загружена сохранённая простая стратегия: ${config.name}" }
-                }
-
-                is LoadedConfig.Voting -> {
-                    strategyManager.switchToVotingStrategy(config.weights)
-                    strategyConfigurationLogger.info { "Загружена сохранённая стратегия голосования: ${config.weights}" }
-                }
-
-                is LoadedConfig.Confirmation -> {
-                    strategyManager.switchToConfirmationStrategy(config.indicators)
-                    strategyConfigurationLogger.info { "Загружена сохранённая стратегия подтверждения: ${config.indicators}" }
-                }
-
-                is LoadedConfig.Candlestick -> {
-                    val timeframe = runCatching {
-                        CandlestickPatternStrategy.CandleTimeframe.valueOf(config.timeframe)
-                    }.getOrDefault(CandlestickPatternStrategy.CandleTimeframe.M5)
-                    val minConfidence = config.minConfidence.coerceIn(0.85, 1.0)
-
-                    candlestickPatternStrategy.setTimeframe(timeframe)
-                    candlestickPatternStrategy.configureMinConfidence(minConfidence)
-                    strategyManager.switchToCandlestickStrategy()
-
-                    strategyConfigurationLogger.info {
-                        "Загружена сохранённая свечная стратегия: ${config.timeframe}, уверенность=$minConfidence"
-                    }
-                }
-
-                null -> {
-                    strategyManager.switchToSimpleStrategy("ema")
-                    strategyConfigurationLogger.info {
-                        "Нет сохранённой конфигурации, используется стратегия по умолчанию: ema"
-                    }
-                }
-            }
+            val configurations = strategyConfigPersistenceService.loadConfigurations()
+            configurations.candlestick?.let(::applyCandlestickConfiguration)
+            configurations.voting?.let { config -> strategyManager.configureVotingStrategy(config.weights) }
+            configurations.confirmation?.let { config -> strategyManager.configureConfirmationStrategy(config.indicators) }
+            strategyConfigurationLogger.info { "Загружены настройки стратегий для автоматического выбора" }
         } catch (e: Exception) {
-            strategyConfigurationLogger.error(e) {
-                "Ошибка загрузки конфигурации стратегии, используется стратегия по умолчанию"
-            }
-            strategyManager.switchToSimpleStrategy("ema")
+            strategyConfigurationLogger.error(e) { "Ошибка загрузки конфигураций стратегий" }
         }
     }
 
@@ -69,13 +33,13 @@ class TradingStrategyConfigurationService(
     }
 
     fun switchToVotingStrategy(weights: Map<String, Int>) {
-        strategyManager.switchToVotingStrategy(weights)
+        strategyManager.configureVotingStrategy(weights)
         strategyConfigPersistenceService.saveVotingStrategy(weights)
         strategyConfigurationLogger.info { "Стратегия переключена на голосование: $weights" }
     }
 
     fun switchToConfirmationStrategy(requiredIndicators: List<String>) {
-        strategyManager.switchToConfirmationStrategy(requiredIndicators)
+        strategyManager.configureConfirmationStrategy(requiredIndicators)
         strategyConfigPersistenceService.saveConfirmationStrategy(requiredIndicators)
         strategyConfigurationLogger.info { "Стратегия переключена на подтверждение: $requiredIndicators" }
     }
@@ -84,9 +48,7 @@ class TradingStrategyConfigurationService(
         timeframe: CandlestickPatternStrategy.CandleTimeframe,
         minConfidence: Double
     ) {
-        candlestickPatternStrategy.setTimeframe(timeframe)
-        candlestickPatternStrategy.configureMinConfidence(minConfidence)
-        strategyManager.switchToCandlestickStrategy()
+        applyCandlestickConfiguration(LoadedConfig.Candlestick(timeframe.name, minConfidence))
         strategyConfigPersistenceService.saveCandlestickStrategy(
             timeframe = timeframe.name,
             minConfidence = minConfidence
@@ -94,5 +56,22 @@ class TradingStrategyConfigurationService(
         strategyConfigurationLogger.info {
             "Стратегия переключена на свечные паттерны: таймфрейм=${timeframe.name}, уверенность=$minConfidence"
         }
+    }
+
+    fun getConfigurations(): Map<String, Any> = mapOf(
+        "candlestick" to mapOf(
+            "timeframe" to candlestickPatternStrategy.currentTimeframe.name,
+            "minConfidence" to candlestickPatternStrategy.minConfidence
+        ),
+        "voting" to mapOf("weights" to strategyManager.getVotingWeights()),
+        "confirmation" to mapOf("indicators" to strategyManager.getConfirmationIndicators())
+    )
+
+    private fun applyCandlestickConfiguration(config: LoadedConfig.Candlestick) {
+        val timeframe = runCatching {
+            CandlestickPatternStrategy.CandleTimeframe.valueOf(config.timeframe)
+        }.getOrDefault(CandlestickPatternStrategy.CandleTimeframe.M5)
+        candlestickPatternStrategy.setTimeframe(timeframe)
+        candlestickPatternStrategy.configureMinConfidence(config.minConfidence.coerceIn(0.85, 1.0))
     }
 }

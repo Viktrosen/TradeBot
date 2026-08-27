@@ -175,6 +175,7 @@ class BrokerPortfolioSyncService(
                         lotSize = lotSize,
                         entryCommission = BigDecimal.ZERO,
                         entryTime = Instant.now().minusSeconds(3600),
+                        entryStrategyId = tradeEventService.findEntryStrategyId(positionId),
                         stopLossPrice = stopLossPrice,
                         atr = atr
                     )

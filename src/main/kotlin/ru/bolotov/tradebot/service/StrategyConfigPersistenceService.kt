@@ -15,7 +15,6 @@ private val logger = KotlinLogging.logger {}
 
 // Sealed class для типов загруженной конфигурации
 sealed class LoadedConfig {
-    data class Simple(val name: String) : LoadedConfig()  // "ema", "rsi"
     data class Voting(val weights: Map<String, Int>) : LoadedConfig()
     data class Confirmation(val indicators: List<String>) : LoadedConfig()
     data class Candlestick(val timeframe: String, val minConfidence: Double) : LoadedConfig()
@@ -35,43 +34,19 @@ class StrategyConfigPersistenceService(
      * Загрузка последней сохранённой конфигурации стратегии
      */
     @Transactional(readOnly = true)
-    fun loadLastConfiguration(): LoadedConfig? {
+    fun loadConfigurations(): StrategyConfigurations {
         return try {
-            // Пробуем загрузить по порядку приоритета
-            val candlestickConfig = configRepository.findByType(StrategyType.CANDLESTICK)
-            if (candlestickConfig != null) {
-                return parseCandlestickConfig(candlestickConfig.config)
-            }
-
-            val confirmationConfig = configRepository.findByType(StrategyType.CONFIRMATION)
-            if (confirmationConfig != null) {
-                return parseConfirmationConfig(confirmationConfig.config)
-            }
-
-            val votingConfig = configRepository.findByType(StrategyType.VOTING)
-            if (votingConfig != null) {
-                return parseVotingConfig(votingConfig.config)
-            }
-
-            val simpleEmaConfig = configRepository.findByType(StrategyType.SIMPLE_EMA)
-            if (simpleEmaConfig != null) {
-                return LoadedConfig.Simple("ema")
-            }
-
-            val simpleRsiConfig = configRepository.findByType(StrategyType.SIMPLE_RSI)
-            if (simpleRsiConfig != null) {
-                return LoadedConfig.Simple("rsi")
-            }
-
-            val compositeConfig = configRepository.findByType(StrategyType.COMPOSITE)
-            if (compositeConfig != null) {
-                return parseCompositeConfig(compositeConfig.config)
-            }
-
-            null
+            StrategyConfigurations(
+                candlestick = configRepository.findByType(StrategyType.CANDLESTICK)
+                    ?.let { config -> parseCandlestickConfig(config.config) },
+                voting = configRepository.findByType(StrategyType.VOTING)
+                    ?.let { config -> parseVotingConfig(config.config) },
+                confirmation = configRepository.findByType(StrategyType.CONFIRMATION)
+                    ?.let { config -> parseConfirmationConfig(config.config) }
+            )
         } catch (e: Exception) {
-            logger.error(e) { "❌ Ошибка загрузки конфигурации стратегии" }
-            null
+            logger.error(e) { "Ошибка загрузки конфигураций стратегий" }
+            StrategyConfigurations()
         }
     }
 
@@ -95,11 +70,6 @@ class StrategyConfigPersistenceService(
         @Suppress("UNCHECKED_CAST")
         val weights = map["weights"] as? Map<String, Int> ?: mapOf("EMA" to 1, "RSI" to 1, "MACD" to 1)
         return LoadedConfig.Voting(weights)
-    }
-
-    private fun parseCompositeConfig(configJson: String): LoadedConfig.Simple {
-        // COMPOSITE сохраняем как Simple для обратной совместимости
-        return LoadedConfig.Simple("ema")
     }
 
     /**
@@ -155,7 +125,8 @@ class StrategyConfigPersistenceService(
      */
     private fun saveConfig(strategyType: StrategyType, configData: Map<String, Any>) {
         val configJson = objectMapper.writeValueAsString(configData)
-        val existingConfig = configRepository.findById("current").orElse(null)
+        val configId = strategyType.name.lowercase()
+        val existingConfig = configRepository.findById(configId).orElse(null)
 
         if (existingConfig != null) {
             existingConfig.type = strategyType
@@ -164,7 +135,7 @@ class StrategyConfigPersistenceService(
             configRepository.save(existingConfig)
         } else {
             val newConfig = StrategyConfig(
-                id = "current",
+                id = configId,
                 type = strategyType,
                 config = configJson,
                 updatedAt = Instant.now()
@@ -173,51 +144,10 @@ class StrategyConfigPersistenceService(
         }
     }
 
-    /**
-     * Получение текущей конфигурации в виде Map (для API)
-     */
-    @Transactional(readOnly = true)
-    fun getCurrentConfig(): Map<String, Any?> {
-        return try {
-            val config = configRepository.findById("current").orElse(null) ?: return mapOf("exists" to false)
-
-            val configData = objectMapper.readValue<Map<String, Any>>(config.config)
-
-            when (config.type) {
-                StrategyType.CANDLESTICK -> mapOf(
-                    "type" to "CANDLESTICK",
-                    "timeframe" to configData["timeframe"],
-                    "minConfidence" to configData["minConfidence"],
-                    "updatedAt" to config.updatedAt.toString()
-                )
-                StrategyType.CONFIRMATION -> mapOf(
-                    "type" to "CONFIRMATION",
-                    "indicators" to configData["indicators"],
-                    "updatedAt" to config.updatedAt.toString()
-                )
-                StrategyType.VOTING -> mapOf(
-                    "type" to "VOTING",
-                    "weights" to configData["weights"],
-                    "updatedAt" to config.updatedAt.toString()
-                )
-                StrategyType.SIMPLE_EMA -> mapOf(
-                    "type" to "SIMPLE",
-                    "name" to "ema",
-                    "updatedAt" to config.updatedAt.toString()
-                )
-                StrategyType.SIMPLE_RSI -> mapOf(
-                    "type" to "SIMPLE",
-                    "name" to "rsi",
-                    "updatedAt" to config.updatedAt.toString()
-                )
-                StrategyType.COMPOSITE -> mapOf(
-                    "type" to "COMPOSITE",
-                    "updatedAt" to config.updatedAt.toString()
-                )
-            }
-        } catch (e: Exception) {
-            logger.error(e) { "Ошибка получения текущей конфигурации" }
-            mapOf("error" to e.message)
-        }
-    }
 }
+
+data class StrategyConfigurations(
+    val candlestick: LoadedConfig.Candlestick? = null,
+    val voting: LoadedConfig.Voting? = null,
+    val confirmation: LoadedConfig.Confirmation? = null
+)

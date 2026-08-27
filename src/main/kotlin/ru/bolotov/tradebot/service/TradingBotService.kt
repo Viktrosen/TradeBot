@@ -36,6 +36,9 @@ import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.bolotov.tradebot.strategy.TradingStrategy
+import ru.bolotov.tradebot.strategy.regime.MarketRegimeService
+import ru.bolotov.tradebot.strategy.regime.MarketRegimeStrategySelector
+import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import ru.bolotov.tradebot.service.data.AiFilterResult
 import ru.bolotov.tradebot.service.data.BotSignal
 import ru.bolotov.tradebot.service.data.CloseReason
@@ -62,6 +65,8 @@ class TradingBotService(
     private val marketDataService: MarketDataServiceSync,
     private val strategyManager: StrategyManager,
     private val candlestickPatternStrategy: CandlestickPatternStrategy,
+    private val marketRegimeService: MarketRegimeService,
+    private val marketRegimeStrategySelector: MarketRegimeStrategySelector,
     private val eventPublisherService: EventPublisherService,
     private val brokerAccountService: BrokerAccountService,
     private val instrumentSelectionService: InstrumentSelectionService,
@@ -103,6 +108,7 @@ class TradingBotService(
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
     private val streamReconnectDelayMs = 5000L
+    private val processedMarketCandles = ConcurrentHashMap<String, String>()
     private val processedStrategyCandles = ConcurrentHashMap<String, String>()
     private val pendingLossExitConfirmations = ConcurrentHashMap<String, String>()
     private val reentryCooldownUntil = ConcurrentHashMap<String, Instant>()
@@ -117,11 +123,15 @@ class TradingBotService(
             accountId = brokerAccountService.initializeAccount()
             instrumentSelectionService.loadFilterConfiguration()
             selectInitialInstruments()
-            strategyConfigurationService.loadLastConfiguration()
+            strategyConfigurationService.loadConfigurations()
             restorePositionsFromBroker()
         }
     }
 
+    /**
+     * Запускает поток котировок, периодические проверки брокерской защиты и
+     * переотбор инструментов. Повторный запуск не создаёт дублирующие потоки.
+     */
     suspend fun start() {
         if (_isRunning.value) {
             logger.warn { "Бот уже запущен" }
@@ -142,6 +152,7 @@ class TradingBotService(
         startTradingAvailabilityUpdates()
     }
 
+    /** Останавливает все фоновые потоки бота, не закрывая позиции. */
     fun stop() {
         _isRunning.value = false
         priceStreamJob?.cancel()
@@ -152,6 +163,10 @@ class TradingBotService(
         eventPublisherService.publishBotStatusChanged("STOPPED")
     }
 
+    /**
+     * Повторно отбирает торговые инструменты по сохранённым фильтрам и безопасно
+     * перезапускает поток цен. Уже открытые позиции остаются в списке наблюдения.
+     */
     suspend fun rescanInstruments(): List<String> {
         if (!isRescanningInstruments.compareAndSet(false, true)) {
             logger.warn { "Рескан инструментов уже выполняется, новый запуск пропущен" }
@@ -246,6 +261,9 @@ class TradingBotService(
             lotSize = lotSize,
             entryCommission = entryCommission,
             entryTime = entryTime.toString(),
+            entryStrategyName = entryStrategyId
+                ?.let(strategyManager::getStrategyById)
+                ?.name,
             aiExplanation = aiExplanation
         )
 
@@ -546,7 +564,8 @@ class TradingBotService(
                         position = signal.position,
                         reason = signal.reason,
                         aiResult = signal.aiResult,
-                        sourceCandleKey = signal.sourceCandleKey
+                        sourceCandleKey = signal.sourceCandleKey,
+                        strategyId = signal.strategyId
                     )
                     is BotSignal.Trade -> executeTradeSignal(signal)
                 }
@@ -590,23 +609,27 @@ class TradingBotService(
     private fun lastPriceInstrument(instrumentId: String): LastPriceInstrument =
         LastPriceInstrument.newBuilder().setInstrumentId(instrumentId).build()
 
+    /**
+     * Дополняет потоковую цену индикаторами. Свечной контекст добавляется позднее,
+     * только если выбранная для конкретного инструмента стратегия действительно
+     * работает со свечными паттернами.
+     */
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
-            val marketData = marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
-            if (marketData == null) {
-                null
-            } else {
-                addCandlestickContext(marketData)
-            }
+            marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
         } catch (e: Exception) {
             logger.error(e) { "Ошибка обогащения рыночных данных для ${lastPrice.instrumentUid}" }
             null
         }
     }
 
-    private suspend fun addCandlestickContext(marketData: MarketData): MarketData {
-        if (!strategyManager.isCandlestickStrategyActive()) {
-            logger.debug { "Свечной анализ пропущен для ${marketData.instrumentName}: активна другая стратегия" }
+    /** Загружает паттерн только для свечной стратегии, выбранной режимом рынка. */
+    private suspend fun addCandlestickContext(
+        marketData: MarketData,
+        strategy: TradingStrategy
+    ): MarketData {
+        if (!strategyManager.isCandlestickStrategy(strategy)) {
+            logger.debug { "Свечной анализ пропущен для ${marketData.instrumentName}: выбрана ${strategy.name}" }
             return marketData
         }
 
@@ -616,12 +639,18 @@ class TradingBotService(
         )
         logger.info {
             "Свечной анализ для ${marketData.instrumentName}: " +
-                "паттерн=${patternResult.pattern}, сигнал=${patternResult.direction}, " +
+                "${patternResult.pattern?.name ?: "паттерн не обнаружен"}, сигнал=${patternResult.direction}, " +
                 "уверенность=${patternResult.confidence}"
         }
         return marketData.copy(candlestickPattern = patternResult)
     }
 
+    /**
+     * Формирует торговое действие для новой закрытой свечи.
+     *
+     * Стоп-лосс и тейк-профит проверяются на каждом обновлении цены и всегда
+     * имеют приоритет над режимом рынка, стратегией и AI-фильтром.
+     */
     private fun buildSignalFlow(marketData: MarketData) = flow {
         val position = _openPositions.value[marketData.instrumentId]
         val riskCloseReason = position?.let {
@@ -632,41 +661,46 @@ class TradingBotService(
             return@flow
         }
 
-        if (!shouldProcessStrategyCandle(marketData)) return@flow
+        if (!shouldProcessMarketCandle(marketData)) return@flow
 
-        val strategy = strategyManager.getCurrentStrategy()
-        val signal = strategy.analyze(marketData)
-        logStrategyAnalysis(strategy, marketData, signal)
+        val regimeDecision = marketRegimeService.evaluate(marketData)
+        val currentPosition = _openPositions.value[marketData.instrumentId]
+        val selection = selectStrategy(currentPosition, regimeDecision.regime) ?: return@flow
+        val strategyMarketData = addCandlestickContext(marketData, selection.strategy)
+        if (!shouldProcessStrategyCandle(strategyMarketData, selection)) return@flow
+
+        val strategy = selection.strategy
+        val signal = strategy.analyze(strategyMarketData)
+        logStrategyAnalysis(strategy, strategyMarketData, signal, selection)
 
         if (signal.direction == OrderDirection.SELL) {
-            val currentPosition = _openPositions.value[marketData.instrumentId]
+            val currentPosition = _openPositions.value[strategyMarketData.instrumentId]
             if (currentPosition?.side == PositionSide.SHORT) return@flow
 
-            val longPosition = currentPosition ?: synchronizePositionForSell(marketData)
+            val longPosition = currentPosition ?: synchronizePositionForSell(strategyMarketData)
             if (longPosition != null) {
-                emitCloseSignalIfApproved(longPosition, marketData, signal, strategy)
+                emitCloseSignalIfApproved(longPosition, strategyMarketData, signal, strategy)
                 return@flow
             }
 
-            emitOpenSignalIfApproved(marketData, signal, strategy, null)
+            emitOpenSignalIfApproved(strategyMarketData, signal, selection, null)
             return@flow
         }
 
-        position?.let { pendingLossExitConfirmations.remove(it.instrumentId) }
+        currentPosition?.let { pendingLossExitConfirmations.remove(it.instrumentId) }
 
         if (signal.direction == OrderDirection.HOLD || signal.confidence <= 0.5) {
             logger.debug {
-                "Сигнал отклонён: ${marketData.instrumentName}, причина=${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}"
+                "Сигнал отклонён: ${strategyMarketData.instrumentName}, причина=${if (signal.direction == OrderDirection.HOLD) "HOLD" else "низкая уверенность=${signal.confidence}"}"
             }
             return@flow
         }
 
-        val currentPosition = _openPositions.value[marketData.instrumentId]
         if (currentPosition?.side == PositionSide.SHORT) {
-            emitCloseSignalIfApproved(currentPosition, marketData, signal, strategy)
+            emitCloseSignalIfApproved(currentPosition, strategyMarketData, signal, strategy)
             return@flow
         }
-        if (currentPosition == null) emitOpenSignalIfApproved(marketData, signal, strategy, null)
+        if (currentPosition == null) emitOpenSignalIfApproved(strategyMarketData, signal, selection, null)
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<BotSignal>.emitCloseSignalIfApproved(
@@ -688,7 +722,8 @@ class TradingBotService(
                 position = position,
                 reason = CloseReason.STRATEGY_SIGNAL,
                 aiResult = aiResult,
-                sourceCandleKey = marketData.signalCandleKey
+                sourceCandleKey = marketData.candlestickPattern?.candleKey ?: marketData.signalCandleKey,
+                strategyId = strategyManager.getCurrentStrategyIdFor(strategy)
             )
         )
     }
@@ -696,12 +731,12 @@ class TradingBotService(
     private suspend fun kotlinx.coroutines.flow.FlowCollector<BotSignal>.emitOpenSignalIfApproved(
         marketData: MarketData,
         signal: ru.bolotov.tradebot.strategy.Signal,
-        strategy: TradingStrategy,
+        selection: StrategySelection,
         currentPosition: OpenPosition?
     ) {
         if (!canExecuteOpenSignal(marketData, signal)) return
 
-        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, currentPosition)
+        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, selection.strategy, currentPosition)
         if (!aiResult.approved) {
             logger.info { "Открытие отклонено AI-фильтром: ${marketData.instrumentName}" }
             return
@@ -711,8 +746,10 @@ class TradingBotService(
             BotSignal.Trade(
                 marketData,
                 signal,
-                strategy.name,
-                strategy.getExplanation(marketData),
+                selection.id,
+                selection.strategy.name,
+                selection.strategy.getExplanation(marketData),
+                selection.regime,
                 aiResult
             )
         )
@@ -737,21 +774,40 @@ class TradingBotService(
         return true
     }
 
-    private fun shouldProcessStrategyCandle(marketData: MarketData): Boolean {
+    private fun shouldProcessMarketCandle(marketData: MarketData): Boolean {
         val candleKey = marketData.signalCandleKey ?: return true
-        return processedStrategyCandles.put(marketData.instrumentId, candleKey) != candleKey
+        return processedMarketCandles.put(marketData.instrumentId, candleKey) != candleKey
+    }
+
+    private fun shouldProcessStrategyCandle(
+        marketData: MarketData,
+        selection: StrategySelection
+    ): Boolean {
+        val candleKey = marketData.candlestickPattern?.candleKey ?: marketData.signalCandleKey ?: return true
+        val processingKey = "${marketData.instrumentId}:${selection.id}"
+        return processedStrategyCandles.put(processingKey, candleKey) != candleKey
+    }
+
+    private fun selectStrategy(
+        position: OpenPosition?,
+        regime: ru.bolotov.tradebot.strategy.regime.MarketRegime
+    ): StrategySelection? = if (position == null) {
+        marketRegimeStrategySelector.selectForNewPosition(regime)
+    } else {
+        marketRegimeStrategySelector.selectForOpenPosition(position.entryStrategyId, regime)
     }
 
     private fun logStrategyAnalysis(
         strategy: TradingStrategy,
         marketData: MarketData,
-        signal: ru.bolotov.tradebot.strategy.Signal
+        signal: ru.bolotov.tradebot.strategy.Signal,
+        selection: StrategySelection
     ) {
         val candleContext = marketData.candlestickPattern
             ?.let { ", свеча=${it.candleKey}, паттерн=${it.pattern}" }
             ?: ", свеча=${marketData.strategyCandleKey}"
         logger.info {
-            "Анализ ${strategy.name}: инструмент=${marketData.instrumentName}$candleContext, " +
+            "Анализ ${strategy.name} (${selection.regime}): инструмент=${marketData.instrumentName}$candleContext, " +
                 "сигнал=${signal.direction}, уверенность=${signal.confidence}"
         }
     }
@@ -819,6 +875,7 @@ class TradingBotService(
         return restoredPosition
     }
 
+    /** Передаёт одобренный сигнал в сервис риска и исполнения, затем обновляет портфель. */
     private suspend fun executeTradeSignal(signal: BotSignal.Trade) {
         val currentAccountId = accountId
         if (currentAccountId == null) {
@@ -830,8 +887,10 @@ class TradingBotService(
             accountId = currentAccountId,
             marketData = signal.marketData,
             signal = signal.signal,
+            strategyId = signal.strategyId,
             strategyName = signal.strategyName,
             strategyExplanation = signal.strategyExplanation.withAiExplanation(signal.aiResult),
+            marketRegime = signal.marketRegime,
             currentPositions = _openPositions.value
         )
 
@@ -857,7 +916,8 @@ class TradingBotService(
         position: OpenPosition,
         reason: CloseReason,
         aiResult: AiFilterResult? = null,
-        sourceCandleKey: String? = null
+        sourceCandleKey: String? = null,
+        strategyId: String? = null
     ) {
         val currentAccountId = accountId
         if (currentAccountId == null) {
@@ -873,7 +933,7 @@ class TradingBotService(
         )
         if (result.removeFromState) {
             _openPositions.value = _openPositions.value - result.position.instrumentId
-            registerReentryCooldown(result.position.instrumentId, sourceCandleKey)
+            registerReentryCooldown(result.position.instrumentId, sourceCandleKey, strategyId)
             refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()
         }
@@ -881,14 +941,21 @@ class TradingBotService(
 
     private fun registerReentryCooldown(
         instrumentId: String,
-        sourceCandleKey: String? = null
+        sourceCandleKey: String? = null,
+        strategyId: String? = null
     ) {
-        val candleDurationSeconds = candlestickPatternStrategy.currentTimeframe.minutes * 60L
+        val candleDurationSeconds = if (strategyId == "candlestick") {
+            candlestickPatternStrategy.currentTimeframe.minutes * 60L
+        } else {
+            MARKET_DATA_TIMEFRAME_SECONDS
+        }
         val cooldownSeconds = candleDurationSeconds * reentryCooldownCandles.coerceAtLeast(1)
         val cooldownEndsAt = Instant.now().plusSeconds(cooldownSeconds)
         reentryCooldownUntil[instrumentId] = cooldownEndsAt
         pendingLossExitConfirmations.remove(instrumentId)
-        sourceCandleKey?.let { processedStrategyCandles[instrumentId] = it }
+        if (sourceCandleKey != null && strategyId != null) {
+            processedStrategyCandles["$instrumentId:$strategyId"] = sourceCandleKey
+        }
         logger.info { "Повторный вход для $instrumentId заблокирован до $cooldownEndsAt" }
     }
 
@@ -974,5 +1041,6 @@ class TradingBotService(
 
     private companion object {
         const val MIN_SCHEDULER_DELAY_MS = 1_000L
+        const val MARKET_DATA_TIMEFRAME_SECONDS = 5L * 60
     }
 }

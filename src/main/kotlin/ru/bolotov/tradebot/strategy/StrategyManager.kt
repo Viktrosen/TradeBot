@@ -26,7 +26,29 @@ class StrategyManager(
         "bollinger" to bbStrategy
     )
 
+    private val strategiesById = mapOf(
+        "ema" to crossEmaStrategy,
+        "rsi" to rsiStrategy,
+        "macd" to macdStrategy,
+        "bb" to bbStrategy,
+        "voting" to votingStrategy,
+        "confirmation" to confirmationStrategy,
+        "candlestick" to candlestickPatternStrategy
+    )
+
     fun getCurrentStrategy(): TradingStrategy = currentStrategy
+
+    /**
+     * Возвращает зарегистрированную стратегию по стабильному идентификатору.
+     * Идентификаторы используются при сохранении стратегии входа в событии сделки.
+     */
+    fun getStrategyById(strategyId: String): TradingStrategy? = strategiesById[strategyId]
+
+    fun getCurrentStrategyIdFor(strategy: TradingStrategy): String? =
+        strategiesById.entries.firstOrNull { (_, registered) -> registered === strategy }?.key
+
+    fun isCandlestickStrategy(strategy: TradingStrategy): Boolean =
+        strategy === candlestickPatternStrategy
 
     fun getCurrentStrategyId(): String = when (currentStrategy) {
         crossEmaStrategy -> "ema"
@@ -110,18 +132,30 @@ class StrategyManager(
     }
 
     fun switchToVotingStrategy(weights: Map<String, Int>) {
-        votingStrategy.configure(StrategyConfiguration.Voting(weights))
+        configureVotingStrategy(weights)
         currentStrategy = votingStrategy
         logger.info { "🔄 Переключено на стратегию голосования: $weights" }
     }
 
     fun switchToConfirmationStrategy(requiredIndicators: List<String>) {
-        confirmationStrategy.configure(StrategyConfiguration.Confirmation(requiredIndicators))
+        configureConfirmationStrategy(requiredIndicators)
         currentStrategy = confirmationStrategy
         logger.info { "🔄 Переключено на стратегию подтверждения: $requiredIndicators" }
     }
 
     fun analyze(data: MarketData): Signal = currentStrategy.analyze(data)
+
+    fun configureVotingStrategy(weights: Map<String, Int>) {
+        votingStrategy.configure(StrategyConfiguration.Voting(weights))
+    }
+
+    fun configureConfirmationStrategy(requiredIndicators: List<String>) {
+        confirmationStrategy.configure(StrategyConfiguration.Confirmation(requiredIndicators))
+    }
+
+    fun getVotingWeights(): Map<String, Int> = votingStrategy.getWeights()
+
+    fun getConfirmationIndicators(): List<String> = confirmationStrategy.getRequiredIndicators()
 
     fun getExplanation(data: MarketData): String = currentStrategy.getExplanation(data)
 }

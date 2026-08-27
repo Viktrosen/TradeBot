@@ -10,6 +10,7 @@ import ru.bolotov.tradebot.domain.model.OrderDirection
 import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.Signal
+import ru.bolotov.tradebot.strategy.regime.MarketRegime
 import java.math.BigDecimal
 
 private val tradeDecisionLogger = KotlinLogging.logger {}
@@ -24,12 +25,19 @@ class TradeDecisionService(
     private val shortTradingRiskService: ShortTradingRiskService
 ) {
 
+    /**
+     * Применяет риск-проверки, рассчитывает допустимый объём и передаёт заявку
+     * в жизненный цикл позиции. Для короткой позиции дополнительно проверяется
+     * маржинальная доступность у брокера.
+     */
     suspend fun executeTrade(
         accountId: String,
         marketData: MarketData,
         signal: Signal,
+        strategyId: String,
         strategyName: String,
         strategyExplanation: String,
+        marketRegime: MarketRegime,
         currentPositions: Map<String, OpenPosition>
     ): TradeDecisionResult {
         tradeDecisionLogger.info {
@@ -46,8 +54,10 @@ class TradeDecisionService(
                 marketData = marketData,
                 signal = signal,
                 signalDirection = signalDirection,
+                strategyId = strategyId,
                 strategyName = strategyName,
                 strategyExplanation = strategyExplanation,
+                marketRegime = marketRegime,
                 currentPositions = currentPositions
             )
 
@@ -65,8 +75,10 @@ class TradeDecisionService(
         marketData: MarketData,
         signal: Signal,
         signalDirection: OrderDirection,
+        strategyId: String,
         strategyName: String,
         strategyExplanation: String,
+        marketRegime: MarketRegime,
         currentPositions: Map<String, OpenPosition>
     ): TradeDecisionResult {
         val side = signalDirection.toPositionSide()
@@ -112,8 +124,10 @@ class TradeDecisionService(
             marketData = marketData,
             signal = signal,
             positionSize = positionSize,
+            strategyId = strategyId,
             strategyName = strategyName,
-            strategyExplanation = strategyExplanation
+            strategyExplanation = strategyExplanation,
+            marketRegime = marketRegime
         )
         return TradeDecisionResult(openedPosition = openedPosition)
     }

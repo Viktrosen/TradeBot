@@ -33,6 +33,12 @@ class MarketDataProvider(
         val lotSize: Int
     )
 
+    /**
+     * Собирает единый снимок рынка по инструменту только из закрытых M5-свечей.
+     *
+     * Снимок используют и стратегии, и определитель режима рынка, поэтому
+     * EMA(50)/EMA(200) рассчитываются из расширенного исторического окна.
+     */
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
         logger.info { "Начинаем получение рыночных данных для $instrumentUid" }
         return try {
@@ -45,10 +51,10 @@ class MarketDataProvider(
             val currentPrice = quotationToBigDecimal(lastPrice.price)
 
             val now = Instant.now()
-            val threeDaysAgo = now.minusSeconds(259200)
+            val historicalFrom = now.minusSeconds(HISTORICAL_LOOKBACK_SECONDS)
             val candles = marketDataService.getCandlesSync(
                 instrumentUid,
-                threeDaysAgo,
+                historicalFrom,
                 now,
                 CandleInterval.CANDLE_INTERVAL_5_MIN
             )
@@ -61,8 +67,12 @@ class MarketDataProvider(
 
             val ema5Series = calculateEMASeries(closes, 5)
             val ema21Series = calculateEMASeries(closes, 21)
+            val ema50Series = calculateEMASeries(closes, 50)
+            val ema200Series = calculateEMASeries(closes, 200)
             val ema5 = ema5Series?.lastOrNull()
             val ema21 = ema21Series?.lastOrNull()
+            val ema50 = ema50Series?.lastOrNull()
+            val ema200 = ema200Series?.lastOrNull()
             val rsi = calculateRSI(closes, 14)
             val macd = calculateMACD(closes)
             val bollingerBands = calculateBollingerBands(closes, currentPrice)
@@ -70,7 +80,9 @@ class MarketDataProvider(
 
             logger.info {
                 "$displayName: цена=${formatIndicator(currentPrice)}, EMA5=${formatIndicator(ema5)}, " +
-                    "EMA21=${formatIndicator(ema21)}, RSI=${rsi?.let { "%.2f".format(it) } ?: "нет данных"}, ATR=${formatIndicator(atr)}"
+                    "EMA21=${formatIndicator(ema21)}, EMA50=${formatIndicator(ema50)}, " +
+                    "EMA200=${formatIndicator(ema200)}, RSI=${rsi?.let { "%.2f".format(it) } ?: "нет данных"}, " +
+                    "ATR=${formatIndicator(atr)}"
             }
 
             MarketData(
@@ -80,6 +92,8 @@ class MarketDataProvider(
                 lotSize = instrumentInfo?.lotSize ?: 1,
                 ema5 = ema5,
                 ema21 = ema21,
+                ema50 = ema50,
+                ema200 = ema200,
                 previousEma5 = ema5Series?.dropLast(1)?.lastOrNull(),
                 previousEma21 = ema21Series?.dropLast(1)?.lastOrNull(),
                 rsi = rsi,
@@ -291,4 +305,8 @@ class MarketDataProvider(
         ?.stripTrailingZeros()
         ?.toPlainString()
         ?: "нет данных"
+
+    private companion object {
+        const val HISTORICAL_LOOKBACK_SECONDS = 10L * 24 * 60 * 60
+    }
 }

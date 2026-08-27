@@ -10,6 +10,7 @@ import ru.bolotov.tradebot.domain.model.TradeEvent
 import ru.bolotov.tradebot.domain.repository.TradeEventRepository
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.Signal
+import ru.bolotov.tradebot.strategy.regime.MarketRegime
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -33,6 +34,9 @@ class TradeEventService(
     fun findOpenEvent(positionId: String): TradeEvent? =
         tradeEventRepository.findByPositionIdAndEventType(positionId, EventType.OPEN)
 
+    fun findEntryStrategyId(positionId: String): String? =
+        findOpenEvent(positionId)?.let { event -> entryStrategyId(event.reason) }
+
     fun findUnclosedPositions(): List<OpenPosition> =
         tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(EventStatus.PROCESSED, EventType.OPEN)
             .asSequence()
@@ -47,7 +51,8 @@ class TradeEventService(
                     entryPrice = event.price,
                     quantity = event.quantity,
                     lotSize = event.lotSize,
-                    entryTime = event.processedAt ?: event.createdAt
+                    entryTime = event.processedAt ?: event.createdAt,
+                    entryStrategyId = entryStrategyId(event.reason)
                 )
             }
             .toList()
@@ -67,9 +72,11 @@ class TradeEventService(
         quantity: Long,
         lotSize: Int,
         totalValue: BigDecimal,
+        strategyId: String,
         strategyName: String,
         signal: Signal,
-        strategyExplanation: String
+        strategyExplanation: String,
+        marketRegime: MarketRegime
     ): TradeEvent {
         val event = TradeEvent(
             instrumentId = marketData.instrumentId,
@@ -80,7 +87,7 @@ class TradeEventService(
             quantity = quantity,
             lotSize = lotSize,
             totalValue = totalValue,
-            reason = buildOpenTradeReason(strategyName, signal),
+            reason = buildOpenTradeReason(strategyId, strategyName, marketRegime, signal),
             explanation = strategyExplanation,
             pnl = null,
             eventType = EventType.OPEN,
@@ -155,10 +162,24 @@ class TradeEventService(
         return tradeEventRepository.save(closeEvent)
     }
 
-    private fun buildOpenTradeReason(strategyName: String, signal: Signal): String =
-        if (strategyName == candlestickPatternStrategy.name && !signal.reason.isNullOrBlank()) {
-            "$strategyName: ${signal.reason}"
+    private fun buildOpenTradeReason(
+        strategyId: String,
+        strategyName: String,
+        marketRegime: MarketRegime,
+        signal: Signal
+    ): String {
+        val context = "strategyId=$strategyId; regime=$marketRegime"
+        return if (strategyName == candlestickPatternStrategy.name && !signal.reason.isNullOrBlank()) {
+            "$context; $strategyName: ${signal.reason}"
         } else {
-            strategyName
+            "$context; $strategyName"
         }
+    }
+
+    private fun entryStrategyId(reason: String): String? =
+        STRATEGY_ID_PATTERN.find(reason)?.groupValues?.getOrNull(1)
+
+    private companion object {
+        val STRATEGY_ID_PATTERN = Regex("(?:^|;)\\s*strategyId=([^;\\s]+)")
+    }
 }

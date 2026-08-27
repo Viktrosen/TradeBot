@@ -32,6 +32,8 @@ data class MarketData(
     val lotSize: Int = 1,
     val ema5: BigDecimal?,
     val ema21: BigDecimal?,
+    val ema50: BigDecimal? = null,
+    val ema200: BigDecimal? = null,
     val previousEma5: BigDecimal? = null,
     val previousEma21: BigDecimal? = null,
     val rsi: Double?,

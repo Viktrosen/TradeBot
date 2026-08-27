@@ -12,6 +12,7 @@ import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.Signal
+import ru.bolotov.tradebot.strategy.regime.MarketRegime
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -31,13 +32,19 @@ class PositionLifecycleService(
     private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
     private val openingInstrumentKeys = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * Открывает позицию с защитой от параллельных заявок по одному инструменту,
+     * ждёт фактического исполнения и создаёт брокерские SL/TP в production.
+     */
     suspend fun openPosition(
         accountId: String,
         marketData: MarketData,
         signal: Signal,
         positionSize: PositionSize,
+        strategyId: String,
         strategyName: String,
-        strategyExplanation: String
+        strategyExplanation: String,
+        marketRegime: MarketRegime
     ): OpenPosition? {
         val operationKey = "$accountId:${marketData.instrumentId}"
         if (!openingInstrumentKeys.add(operationKey)) {
@@ -53,8 +60,10 @@ class PositionLifecycleService(
                 marketData = marketData,
                 signal = signal,
                 positionSize = positionSize,
+                strategyId = strategyId,
                 strategyName = strategyName,
-                strategyExplanation = strategyExplanation
+                strategyExplanation = strategyExplanation,
+                marketRegime = marketRegime
             )
         } finally {
             openingInstrumentKeys.remove(operationKey)
@@ -66,8 +75,10 @@ class PositionLifecycleService(
         marketData: MarketData,
         signal: Signal,
         positionSize: PositionSize,
+        strategyId: String,
         strategyName: String,
-        strategyExplanation: String
+        strategyExplanation: String,
+        marketRegime: MarketRegime
     ): OpenPosition? {
         val side = signal.toPositionSideOrNull() ?: run {
             positionLifecycleLogger.error {
@@ -87,9 +98,11 @@ class PositionLifecycleService(
             quantity = positionSize.quantity,
             lotSize = marketData.lotSize,
             totalValue = positionSize.value,
+            strategyId = strategyId,
             strategyName = strategyName,
             signal = signal,
-            strategyExplanation = strategyExplanation
+            strategyExplanation = strategyExplanation,
+            marketRegime = marketRegime
         )
 
         val orderResult = orderExecutionService.placeOrder(
@@ -150,6 +163,7 @@ class PositionLifecycleService(
             lotSize = marketData.lotSize,
             entryCommission = entryCommission,
             entryTime = Instant.now(),
+            entryStrategyId = strategyId,
             stopLossPrice = positionSize.stopLossPrice,
             atr = positionSize.atr
         )
@@ -198,6 +212,10 @@ class PositionLifecycleService(
         return closePositionAtPrice(accountId, position, marketData.currentPrice, reason, marketOrder = false)
     }
 
+    /**
+     * Отменяет защитные заявки и закрывает позицию рыночной заявкой с повторными
+     * попытками; результат фиксируется единственным CLOSE-событием.
+     */
     suspend fun closePositionWithRetry(
         accountId: String,
         position: OpenPosition,

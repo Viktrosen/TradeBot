@@ -8,16 +8,16 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.service.TradingBotService
+import ru.bolotov.tradebot.service.TradingStrategyConfigurationService
 import ru.bolotov.tradebot.service.InstrumentSelectionService
 import ru.bolotov.tradebot.service.ProtectionReplacementResult
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
-import ru.bolotov.tradebot.strategy.StrategyManager
 
 @RestController
 @RequestMapping("/internal/command")
 class InternalCommandController(
     private val tradingBotService: TradingBotService,
-    private val strategyManager: StrategyManager,
+    private val strategyConfigurationService: TradingStrategyConfigurationService,
     private val config: PositionSizingConfig,
     private val candlestickPatternStrategy: CandlestickPatternStrategy,
     private val instrumentSelectionService: InstrumentSelectionService
@@ -155,10 +155,6 @@ class InternalCommandController(
         return ResponseEntity.ok(
             mapOf(
                 "strategies" to listOf(
-                    mapOf("name" to "ema", "type" to "simple", "description" to "Cross EMA (5/21)"),
-                    mapOf("name" to "rsi", "type" to "simple", "description" to "RSI oversold/overbought"),
-                    mapOf("name" to "macd", "type" to "simple", "description" to "MACD crossover"),
-                    mapOf("name" to "confirmation", "type" to "confirmation", "description" to "Подтверждение сигналов: EMA, RSI, MACD, BB"),
                     mapOf("name" to "voting", "type" to "voting", "description" to "Взвешенное голосование EMA, RSI, MACD, BB"),
                     mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)")
                 ),
@@ -167,14 +163,17 @@ class InternalCommandController(
         )
     }
 
+    @GetMapping("/strategy/configurations")
+    fun getStrategyConfigurations(): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.ok(strategyConfigurationService.getConfigurations())
+
     private fun currentStrategyResponse(): Map<String, Any> {
-        val strategy = tradingBotService.getCurrentStrategy()
         return mapOf(
-            "id" to strategyManager.getCurrentStrategyId(),
-            "name" to strategy.name,
-            "description" to strategy.description,
-            "type" to strategyManager.getCurrentStrategyType(),
-            "settings" to strategyManager.getCurrentStrategySettings()
+            "id" to "market_regime",
+            "name" to "Автоматический выбор стратегий",
+            "description" to "Стратегия выбирается отдельно для каждого инструмента по режиму рынка",
+            "type" to "adaptive",
+            "settings" to mapOf("mode" to "market_regime")
         )
     }
 

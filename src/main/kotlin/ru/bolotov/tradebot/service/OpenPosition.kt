@@ -17,6 +17,7 @@ data class OpenPosition(
     val lotSize: Int = 1,
     val entryCommission: BigDecimal = BigDecimal.ZERO,
     val entryTime: Instant,
+    val entryStrategyId: String? = null,
     val stopLossPrice: BigDecimal? = null,
     val atr: BigDecimal? = null
 ) {

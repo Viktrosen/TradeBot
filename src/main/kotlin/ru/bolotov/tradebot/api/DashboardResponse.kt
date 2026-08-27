@@ -21,6 +21,7 @@ data class OpenPositionResponse(
     val lotSize: Int,
     val entryCommission: BigDecimal,
     val entryTime: String,
+    val entryStrategyName: String? = null,
     val aiExplanation: String? = null
 )
 

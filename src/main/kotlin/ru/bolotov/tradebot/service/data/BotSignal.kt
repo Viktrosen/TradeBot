@@ -3,13 +3,16 @@ package ru.bolotov.tradebot.service.data
 import ru.bolotov.tradebot.service.OpenPosition
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.Signal
+import ru.bolotov.tradebot.strategy.regime.MarketRegime
 
 sealed class BotSignal {
     data class Trade(
         val marketData: MarketData,
         val signal: Signal,
+        val strategyId: String,
         val strategyName: String,
         val strategyExplanation: String,
+        val marketRegime: MarketRegime,
         val aiResult: AiFilterResult
     ) : BotSignal()
 
@@ -17,7 +20,8 @@ sealed class BotSignal {
         val position: OpenPosition,
         val reason: CloseReason,
         val aiResult: AiFilterResult? = null,
-        val sourceCandleKey: String? = null
+        val sourceCandleKey: String? = null,
+        val strategyId: String? = null
     ) : BotSignal()
 }
 

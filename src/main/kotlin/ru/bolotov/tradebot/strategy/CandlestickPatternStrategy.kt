@@ -120,6 +120,10 @@ class CandlestickPatternStrategy(
         )
     }
 
+    /**
+     * Анализирует только закрытые свечи выбранного таймфрейма, применяет
+     * технические фильтры и возвращает сигнал, действующий ограниченное время.
+     */
     suspend fun analyzePatternWithCandles(
         instrumentUid: String,
         confirmationPrice: BigDecimal? = null
