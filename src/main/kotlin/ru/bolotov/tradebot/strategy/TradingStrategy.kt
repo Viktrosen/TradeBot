@@ -45,7 +45,7 @@ data class MarketData(
     val spread: BigDecimal,
     val volatility: Double,
     val strategyCandleKey: String? = null,
-    val candlestickPattern: CandlestickPatternStrategy.PatternResult? = null
+    val candlestickPattern: ru.bolotov.tradebot.strategy.data.PatternResult? = null
 )
 
 data class MacdData(

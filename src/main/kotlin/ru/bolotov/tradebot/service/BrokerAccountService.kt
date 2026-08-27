@@ -19,6 +19,7 @@ import java.math.BigDecimal
 
 private val accountLogger = KotlinLogging.logger {}
 
+/** Выбирает именованный реальный счёт либо создаёт и пополняет счёт песочницы. */
 @Service
 class BrokerAccountService(
     private val operationsService: OperationsServiceSync,
@@ -28,6 +29,7 @@ class BrokerAccountService(
     @Value("\${broker.account.name:}") private val productionAccountName: String
 ) {
 
+    /** Инициализирует допустимый для текущего режима счёт и возвращает его идентификатор. */
     suspend fun initializeAccount(): String? {
         return try {
             if (sandboxEnabled) {
@@ -124,6 +126,7 @@ class BrokerAccountService(
         }
     }
 
+    /** Закрывает все доступные sandbox-счета; используется только для очистки песочницы. */
     fun closeAllSandboxAccounts() {
         try {
             val accounts = sandboxService.getAccountsSync()

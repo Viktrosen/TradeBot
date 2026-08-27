@@ -8,11 +8,13 @@ import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
+/** Хранит единственную актуальную конфигурацию торговых рисков. */
 @Service
 class RiskConfigPersistenceService(
     private val repository: RiskConfigRepository
 ) {
 
+    /** Загружает конфигурацию рисков или создаёт значения по умолчанию. */
     fun loadConfig(): RiskConfigEntity? = try {
         repository.findById(CURRENT_CONFIG_ID).orElseGet(::saveDefaultConfig)
     } catch (error: Exception) {
@@ -20,6 +22,7 @@ class RiskConfigPersistenceService(
         null
     }
 
+    /** Сохраняет все параметры рисков как согласованный снимок. */
     fun saveConfig(
         positionSizePercent: Double,
         stopLossPercent: Double,

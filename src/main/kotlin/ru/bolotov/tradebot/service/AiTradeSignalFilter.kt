@@ -9,17 +9,20 @@ import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.PositionSide
 import org.springframework.web.client.RestClient
+import ru.bolotov.tradebot.service.data.AiAction
+import ru.bolotov.tradebot.service.data.AiDecision
 import ru.bolotov.tradebot.service.data.AiFilterResult
+import ru.bolotov.tradebot.service.data.AiTradeContext
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
 import ru.bolotov.tradebot.strategy.TradingStrategy
 import java.math.BigDecimal
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicReference
 
 private val aiFilterLogger = KotlinLogging.logger {}
 
+/** Запрашивает AI как консервативный дополнительный фильтр торговых сигналов. */
 @Service
 class AiTradeSignalFilter(
     @Qualifier("openRouterRestClient") private val restClient: RestClient,
@@ -29,10 +32,11 @@ class AiTradeSignalFilter(
     @Value("\${ai.openrouter.model:openai/gpt-4o}") private val model: String,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
-    @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double,
-    @Value("\${ai.openrouter.rate-limit-cooldown-ms:60000}") private val rateLimitCooldownMs: Long
+    @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
 ) {
-    private val rateLimitedUntil = AtomicReference<Instant?>(null)
+    private val rateLimitLock = Any()
+    private var rateLimitedUntil: Instant? = null
+    private var rateLimitAttempt = 0
 
     init {
         when {
@@ -45,6 +49,7 @@ class AiTradeSignalFilter(
         }
     }
 
+    /** Возвращает решение AI либо отклонение при ошибке, лимите или недостаточной уверенности. */
     fun evaluate(
         marketData: MarketData,
         signal: Signal,
@@ -62,6 +67,7 @@ class AiTradeSignalFilter(
             val startedAt = System.nanoTime()
             logRequest(marketData, signal, strategy)
             val decision = requestDecision(marketData, signal, strategy, position)
+            resetRateLimitBackoff()
             val durationMs = (System.nanoTime() - startedAt) / NANOS_IN_MILLISECOND
             val requiredConfidence = requiredConfidence(signal, position, marketData.currentPrice)
             val result = AiFilterResult(
@@ -182,23 +188,42 @@ class AiTradeSignalFilter(
         }
     }
 
-    private fun isRateLimited(): Boolean {
-        val blockedUntil = rateLimitedUntil.get() ?: return false
+    /** Проверяет активную паузу, не сбрасывая ступень backoff до успешного ответа AI. */
+    private fun isRateLimited(): Boolean = synchronized(rateLimitLock) {
+        val blockedUntil = rateLimitedUntil ?: return false
         if (!Instant.now().isBefore(blockedUntil)) {
-            rateLimitedUntil.compareAndSet(blockedUntil, null)
+            rateLimitedUntil = null
             return false
         }
         aiFilterLogger.debug { "AI-фильтр временно не вызывает OpenRouter до $blockedUntil после HTTP 429" }
-        return true
+        true
     }
 
+    /**
+     * Увеличивает паузу после каждого фактического HTTP 429. После последней
+     * ступени список заканчивается постоянной паузой 300 секунд.
+     */
     private fun blockRequestsAfterRateLimit() {
-        val cooldownMs = rateLimitCooldownMs.coerceAtLeast(MIN_RATE_LIMIT_COOLDOWN_MS)
-        val blockedUntil = Instant.now().plusMillis(cooldownMs)
-        rateLimitedUntil.set(blockedUntil)
-        aiFilterLogger.warn {
-            "AI-фильтр получил HTTP 429; запросы к OpenRouter приостановлены до $blockedUntil"
+        val (waitSeconds, blockedUntil) = synchronized(rateLimitLock) {
+            val delayIndex = rateLimitAttempt.coerceAtMost(RATE_LIMIT_BACKOFF_SECONDS.lastIndex)
+            val delaySeconds = RATE_LIMIT_BACKOFF_SECONDS[delayIndex]
+            rateLimitAttempt = (delayIndex + 1).coerceAtMost(RATE_LIMIT_BACKOFF_SECONDS.size)
+            val until = Instant.now().plusSeconds(delaySeconds)
+            rateLimitedUntil = until
+            delaySeconds to until
         }
+        aiFilterLogger.warn {
+            "AI-фильтр получил HTTP 429; пауза $waitSeconds с, запросы к OpenRouter приостановлены до $blockedUntil"
+        }
+    }
+
+    /** Сбрасывает накопленный backoff только после успешного и валидного ответа AI. */
+    private fun resetRateLimitBackoff() = synchronized(rateLimitLock) {
+        if (rateLimitAttempt == 0 && rateLimitedUntil == null) return
+
+        rateLimitAttempt = 0
+        rateLimitedUntil = null
+        aiFilterLogger.info { "AI-фильтр: успешный ответ получен, backoff после HTTP 429 сброшен" }
     }
 
     private fun requiredConfidence(
@@ -224,7 +249,7 @@ class AiTradeSignalFilter(
         const val MAX_COMPLETION_TOKENS = 180
         const val NANOS_IN_MILLISECOND = 1_000_000L
         const val HTTP_TOO_MANY_REQUESTS = 429
-        const val MIN_RATE_LIMIT_COOLDOWN_MS = 1_000L
+        val RATE_LIMIT_BACKOFF_SECONDS = listOf(10L, 20L, 40L, 80L, 160L, 300L)
 
         const val SYSTEM_PROMPT = """
             Ты — консервативный фильтр подтверждения сигналов торгового бота.
@@ -256,117 +281,3 @@ class AiTradeSignalFilter(
 }
 
 private class AiRateLimitException : RuntimeException("OpenRouter вернул HTTP 429")
-
-private enum class AiAction {
-    APPROVE,
-    REJECT,
-    HOLD;
-
-    val description: String
-        get() = when (this) {
-            APPROVE -> "одобрено"
-            REJECT -> "отклонено"
-            HOLD -> "недостаточно данных"
-        }
-}
-
-private data class AiDecision(
-    val action: AiAction,
-    val confidence: Double,
-    val reason: String
-)
-
-private data class AiTradeContext(
-    val strategy: AiStrategyContext,
-    val signal: AiSignalContext,
-    val market: AiMarketContext,
-    val position: AiPositionContext?
-) {
-    companion object {
-        fun from(
-            marketData: MarketData,
-            signal: Signal,
-            strategy: TradingStrategy,
-            position: OpenPosition?
-        ) = AiTradeContext(
-            strategy = AiStrategyContext(
-                name = strategy.name,
-                explanation = strategy.getExplanation(marketData),
-                candlestickPattern = marketData.candlestickPattern?.pattern?.name,
-                candlestickConfidence = marketData.candlestickPattern?.confidence,
-                candlestickTimeframe = marketData.candlestickPattern?.candleKey?.substringBefore(':')
-            ),
-            signal = AiSignalContext(
-                direction = signal.direction.name,
-                confidence = signal.confidence,
-                reason = signal.reason
-            ),
-            market = AiMarketContext.from(marketData),
-            position = position?.let { AiPositionContext.from(it, marketData.currentPrice) }
-        )
-    }
-}
-
-private data class AiStrategyContext(
-    val name: String,
-    val explanation: String,
-    val candlestickPattern: String?,
-    val candlestickConfidence: Double?,
-    val candlestickTimeframe: String?
-)
-
-private data class AiSignalContext(
-    val direction: String,
-    val confidence: Double,
-    val reason: String?
-)
-
-private data class AiMarketContext(
-    val instrument: String,
-    val currentPrice: BigDecimal,
-    val ema5: BigDecimal?,
-    val ema21: BigDecimal?,
-    val rsi: Double?,
-    val macdHistogram: BigDecimal?,
-    val bollingerPercentB: Double?,
-    val atr: BigDecimal?,
-    val volume: Long,
-    val averageVolume: Long,
-    val volatility: Double,
-    val spread: BigDecimal
-) {
-    companion object {
-        fun from(data: MarketData) = AiMarketContext(
-            instrument = data.instrumentName,
-            currentPrice = data.currentPrice,
-            ema5 = data.ema5,
-            ema21 = data.ema21,
-            rsi = data.rsi,
-            macdHistogram = data.macd?.histogram,
-            bollingerPercentB = data.bollingerBands?.percentB,
-            atr = data.atr,
-            volume = data.volume,
-            averageVolume = data.avgVolume,
-            volatility = data.volatility,
-            spread = data.spread
-        )
-    }
-}
-
-private data class AiPositionContext(
-    val positionSide: String,
-    val entryPrice: BigDecimal,
-    val currentPnlPercent: Double,
-    val stopLossPrice: BigDecimal?,
-    val openedAt: String
-) {
-    companion object {
-        fun from(position: OpenPosition, currentPrice: BigDecimal) = AiPositionContext(
-            positionSide = position.side.name,
-            entryPrice = position.entryPrice,
-            currentPnlPercent = position.currentPnlPercent(currentPrice),
-            stopLossPrice = position.stopLossPrice,
-            openedAt = position.entryTime.toString()
-        )
-    }
-}

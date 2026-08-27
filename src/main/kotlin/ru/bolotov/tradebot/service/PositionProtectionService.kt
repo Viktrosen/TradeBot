@@ -10,6 +10,8 @@ import ru.bolotov.tradebot.domain.model.PositionProtectionEntity
 import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.domain.model.ProtectionUpdateStatus
 import ru.bolotov.tradebot.domain.repository.PositionProtectionRepository
+import ru.bolotov.tradebot.service.data.ProtectionOrderPair
+import ru.bolotov.tradebot.service.data.ProtectionPrices
 import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.tinkoff.piapi.contract.v1.StopOrder
 import ru.tinkoff.piapi.contract.v1.StopOrderDirection
@@ -26,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 private val protectionLogger = KotlinLogging.logger {}
 
+/** Создаёт, заменяет, отменяет и сверяет брокерские stop-loss и take-profit заявки. */
 @Service
 class PositionProtectionService(
     private val stopOrdersService: StopOrdersServiceSync,
@@ -36,6 +39,7 @@ class PositionProtectionService(
 ) {
     private val protectionLocks = ConcurrentHashMap.newKeySet<String>()
 
+    /** Создаёт пару защитных заявок для новой позиции, кроме песочницы. */
     fun createProtection(accountId: String, position: OpenPosition): ProtectionCreationResult {
         if (sandboxEnabled) return skippedInSandbox(position)
 
@@ -46,6 +50,7 @@ class PositionProtectionService(
         } ?: ProtectionCreationResult.Failed(IllegalStateException("Защита позиции уже изменяется"))
     }
 
+    /** Безопасно заменяет защитные уровни всех переданных позиций после изменения риск-настроек. */
     fun replaceProtectionForOpenPositions(
         accountId: String,
         positions: Collection<OpenPosition>,
@@ -63,6 +68,7 @@ class PositionProtectionService(
         return ProtectionReplacementResult.Success
     }
 
+    /** Отменяет все известные защитные заявки позиции при её закрытии. */
     fun cancelProtection(accountId: String, positionId: String, instrumentName: String): Boolean {
         if (sandboxEnabled) return true
 
@@ -72,6 +78,7 @@ class PositionProtectionService(
         } ?: false
     }
 
+    /** Завершает учёт исполненной защиты и отменяет вторую заявку пары. */
     fun completeTriggeredProtection(
         accountId: String,
         positionId: String,
@@ -89,6 +96,7 @@ class PositionProtectionService(
         }
     }
 
+    /** Получает одним запросом активные stop-заявки счёта для сверки. */
     fun loadBrokerSnapshot(accountId: String): BrokerProtectionSnapshot? {
         if (sandboxEnabled) return BrokerProtectionSnapshot.empty()
 
@@ -105,6 +113,7 @@ class PositionProtectionService(
         }.getOrNull()
     }
 
+    /** Определяет, какая сохранённая защита позиции исчезла или исполнилась у брокера. */
     fun findTriggeredProtection(position: OpenPosition, snapshot: BrokerProtectionSnapshot): TriggeredProtection? {
         val protection = positionProtectionRepository.findByPositionId(position.positionId) ?: return null
         return listOfNotNull(
@@ -117,6 +126,7 @@ class PositionProtectionService(
             }
     }
 
+    /** Восстанавливает отсутствующие защитные заявки для ещё открытых локальных позиций. */
     fun reconcileProtection(accountId: String, positions: Collection<OpenPosition>) {
         if (sandboxEnabled) return
 
@@ -411,6 +421,3 @@ data class BrokerProtectionSnapshot(val ordersById: Map<String, StopOrder>) {
 }
 
 data class TriggeredProtection(val orderId: String, val reason: String, val stopOrder: StopOrder)
-
-private data class ProtectionOrderPair(val stopLossOrderId: String, val takeProfitOrderId: String)
-private data class ProtectionPrices(val stopLossPrice: BigDecimal, val takeProfitPrice: BigDecimal)

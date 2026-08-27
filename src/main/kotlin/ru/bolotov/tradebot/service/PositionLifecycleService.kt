@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.OrderDirection
 import ru.bolotov.tradebot.domain.model.PositionSide
+import ru.bolotov.tradebot.service.data.CloseExecutionTotals
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.bolotov.tradebot.strategy.Signal
@@ -21,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 private val positionLifecycleLogger = KotlinLogging.logger {}
 
+/** Управляет жизненным циклом позиции: открытие, исполнение, закрытие и фиксация P&L. */
 @Service
 class PositionLifecycleService(
     private val marketDataProvider: MarketDataProvider,
@@ -36,6 +38,7 @@ class PositionLifecycleService(
      * Открывает позицию с защитой от параллельных заявок по одному инструменту,
      * ждёт фактического исполнения и создаёт брокерские SL/TP в production.
      */
+    /** Открывает позицию, ждёт фактического исполнения и ставит защиту в production. */
     suspend fun openPosition(
         accountId: String,
         marketData: MarketData,
@@ -206,6 +209,7 @@ class PositionLifecycleService(
         return position.takeUnless { closeResult.closed }
     }
 
+    /** Закрывает позицию рыночной заявкой и записывает результат без повторных попыток. */
     suspend fun closePosition(accountId: String, position: OpenPosition, reason: String = "CLOSE"): ClosePositionResult {
         val marketData = marketDataProvider.fetchMarketData(position.instrumentId)
             ?: return ClosePositionResult(position, closed = false, removeFromState = false)
@@ -216,6 +220,7 @@ class PositionLifecycleService(
      * Отменяет защитные заявки и закрывает позицию рыночной заявкой с повторными
      * попытками; результат фиксируется единственным CLOSE-событием.
      */
+    /** Закрывает позицию с ограниченными повторами для аварийного и ручного потоков. */
     suspend fun closePositionWithRetry(
         accountId: String,
         position: OpenPosition,
@@ -323,6 +328,7 @@ class PositionLifecycleService(
         return ClosePositionResult(position, closed = false, removeFromState = false)
     }
 
+    /** Закрывает набор позиций параллельными небольшими группами для аварийной остановки. */
     suspend fun closePositionsInChunks(
         accountId: String,
         positions: List<OpenPosition>,
@@ -342,6 +348,7 @@ class PositionLifecycleService(
         return results
     }
 
+    /** Фиксирует закрытие, обнаруженное через исполнение брокерского SL или TP. */
     fun recordBrokerProtectionClose(
         accountId: String,
         position: OpenPosition,
@@ -616,9 +623,4 @@ data class ClosePositionResult(
     val position: OpenPosition,
     val closed: Boolean,
     val removeFromState: Boolean
-)
-
-private data class CloseExecutionTotals(
-    val totalValue: BigDecimal,
-    val totalCommission: BigDecimal
 )

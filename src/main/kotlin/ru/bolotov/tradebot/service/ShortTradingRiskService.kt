@@ -14,6 +14,7 @@ import java.math.BigDecimal
 
 private val shortRiskLogger = KotlinLogging.logger {}
 
+/** Проверяет доступность инструмента и достаточность маржи до открытия SHORT. */
 @Service
 class ShortTradingRiskService(
     private val instrumentsService: InstrumentsServiceSync,
@@ -22,6 +23,7 @@ class ShortTradingRiskService(
     @Value("\${trading.short.min-margin-sufficiency}")
     private val minimumMarginSufficiency: Double
 ) {
+    /** Возвращает разрешение либо причину безопасного отказа в открытии короткой позиции. */
     fun canOpenShort(accountId: String, instrumentId: String): ShortRiskCheck {
         if (sandboxEnabled) {
             return ShortRiskCheck.Rejected(

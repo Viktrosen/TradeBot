@@ -12,6 +12,7 @@ import java.math.BigDecimal
 
 private val portfolioSnapshotLogger = KotlinLogging.logger {}
 
+/** Сохраняет снимки портфеля и публикует изменения баланса для клиента. */
 @Service
 class PortfolioSnapshotService(
     private val operationsService: OperationsServiceSync,
@@ -19,10 +20,12 @@ class PortfolioSnapshotService(
     private val objectMapper: ObjectMapper,
     private val eventPublisherService: EventPublisherService
 ) {
+    /** Возвращает последние известные свободные деньги без синхронного вызова брокера. */
     fun getLatestAvailableCash(): BigDecimal =
         portfolioSnapshotRepository.findTopByOrderByTimestampDesc()?.availableCash ?: BigDecimal.ZERO
 
 
+    /** Запрашивает портфель у брокера, сохраняет его снимок и отправляет обновление клиенту. */
     suspend fun takeSnapshot(accountId: String?) {
         try {
             if (accountId == null) {

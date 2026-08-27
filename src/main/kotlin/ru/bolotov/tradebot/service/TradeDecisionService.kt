@@ -15,6 +15,7 @@ import java.math.BigDecimal
 
 private val tradeDecisionLogger = KotlinLogging.logger {}
 
+/** Оркестрирует проверку стратегии, рисков и исполнение одного торгового решения. */
 @Service
 class TradeDecisionService(
     private val positionSizingService: PositionSizingService,
@@ -30,6 +31,7 @@ class TradeDecisionService(
      * в жизненный цикл позиции. Для короткой позиции дополнительно проверяется
      * маржинальная доступность у брокера.
      */
+    /** Обрабатывает сигнал: открывает позицию, закрывает существующую либо безопасно отклоняет его. */
     suspend fun executeTrade(
         accountId: String,
         marketData: MarketData,

@@ -16,11 +16,13 @@ import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
+/** Инкапсулирует выставление, отслеживание и отмену заявок брокера. */
 @Service
 class OrderExecutionService(
     private val ordersService: OrdersServiceSync
 ) {
 
+    /** Выставляет лимитную или рыночную заявку и возвращает её идентификатор. */
     suspend fun placeOrder(
         accountId: String,
         instrumentId: String,
@@ -68,6 +70,7 @@ class OrderExecutionService(
         }
     }
 
+    /** Выставляет рыночную заявку с параметрами для LONG или SHORT. */
     suspend fun placeMarketOrder(
         accountId: String,
         instrumentId: String,
@@ -111,6 +114,7 @@ class OrderExecutionService(
         }
     }
 
+    /** Оценивает денежный объём заявки до её фактического размещения. */
     fun estimateOrderAmount(
         accountId: String,
         instrumentId: String,
@@ -138,6 +142,7 @@ class OrderExecutionService(
         }
     }
 
+    /** Получает допустимые пределы количества лотов у брокера. */
     fun getBrokerLotLimits(
         accountId: String,
         instrumentId: String,
@@ -167,6 +172,7 @@ class OrderExecutionService(
         }
     }
 
+    /** Ищет среди активных брокерских заявок заявку конкретной позиции. */
     fun findActiveOrder(
         accountId: String,
         instrumentId: String,
@@ -187,6 +193,7 @@ class OrderExecutionService(
             }
     }
 
+    /** Ожидает исполнения заявки ограниченное время и собирает фактические сделки. */
     suspend fun waitForOrderFill(
         accountId: String,
         orderId: String,
@@ -253,6 +260,7 @@ class OrderExecutionService(
         )
     }
 
+    /** Отменяет неисполненный остаток заявки и сообщает об успехе операции. */
     fun cancelOrder(accountId: String, orderId: String): Boolean = try {
         ordersService.cancelOrderSync(accountId, orderId)
         logger.info { "Отменён неисполненный остаток заявки: $orderId" }
@@ -262,6 +270,7 @@ class OrderExecutionService(
         false
     }
 
+    /** Возвращает результат исполнения заявки для сверки после торговой операции. */
     fun getExecutedOrder(accountId: String, orderId: String): BrokerOrderExecution? = runCatching {
         val state = ordersService.getOrderStateSync(accountId, orderId)
         BrokerOrderExecution(

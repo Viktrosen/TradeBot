@@ -25,6 +25,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.springframework.stereotype.Component
 import ru.bolotov.tradebot.broker.getCandlesSync
+import ru.bolotov.tradebot.strategy.data.CachedCandles
+import ru.bolotov.tradebot.strategy.data.CandlestickMarketFilters
+import ru.bolotov.tradebot.strategy.data.PatternResult
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
 import ru.ttech.piapi.core.MarketDataServiceSync
@@ -53,17 +56,6 @@ class CandlestickPatternStrategy(
     private val activeSignalKeys = ConcurrentHashMap<String, String>()
     private val signalExpiryJobs = ConcurrentHashMap<String, Job>()
     private val loggedPatternKeys = ConcurrentHashMap<String, String>()
-
-    private data class CachedCandles(
-        val candles: List<HistoricCandle>,
-        val loadedAt: Instant
-    )
-
-    private data class MarketFilters(
-        val globalTrend: OrderDirection,
-        val rsi: BigDecimal?,
-        val volumeSpike: Boolean
-    )
 
     enum class CandleTimeframe(val interval: CandleInterval, val minutes: Int) {
         M1(CandleInterval.CANDLE_INTERVAL_1_MIN, 1),
@@ -97,14 +89,6 @@ class CandlestickPatternStrategy(
         MARUBOZU,
         SPINNING_TOP
     }
-
-    data class PatternResult(
-        val pattern: PatternType?,
-        val direction: OrderDirection,
-        val confidence: Double,
-        val description: String,
-        val candleKey: String? = null
-    )
 
     override fun analyze(data: MarketData): Signal {
         val result = data.candlestickPattern ?: return Signal.HOLD
@@ -178,7 +162,12 @@ class CandlestickPatternStrategy(
 
         val requiredCandles = maxOf(lookbackCandles + INDICATOR_BUFFER_CANDLES, EMA_PERIOD + INDICATOR_BUFFER_CANDLES)
         val intervalSeconds = currentTimeframe.minutes.toLong() * SECONDS_IN_MINUTE
-        val from = now.minusSeconds(requiredCandles.toLong() * intervalSeconds)
+        val requestedFrom = now.minusSeconds(requiredCandles.toLong() * intervalSeconds)
+        val from = CandleHistoryWindow.clampFrom(
+            requestedFrom = requestedFrom,
+            now = now,
+            interval = currentTimeframe.interval
+        )
         val candles = marketDataService.getCandlesSync(instrumentUid, from, now, currentTimeframe.interval)
             .filter { isClosed(it, now, intervalSeconds) }
 
@@ -378,7 +367,7 @@ class CandlestickPatternStrategy(
         return pattern.copy(confidence = confidence.coerceIn(0.0, 1.0))
     }
 
-    private fun calculateFilters(candles: List<HistoricCandle>): MarketFilters {
+    private fun calculateFilters(candles: List<HistoricCandle>): CandlestickMarketFilters {
         val closes = candles.map(::candleClose)
         val ema200 = calculateEma(closes, EMA_PERIOD)
         val currentClose = closes.lastOrNull()
@@ -389,7 +378,7 @@ class CandlestickPatternStrategy(
             else -> OrderDirection.HOLD
         }
 
-        return MarketFilters(
+        return CandlestickMarketFilters(
             globalTrend = globalTrend,
             rsi = calculateRsi(closes, RSI_PERIOD),
             volumeSpike = hasVolumeSpike(candles)

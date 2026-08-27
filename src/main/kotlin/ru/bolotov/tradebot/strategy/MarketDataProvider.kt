@@ -6,6 +6,7 @@ import ru.bolotov.tradebot.broker.getCandlesSync
 import ru.bolotov.tradebot.broker.getInstrumentByUIDSync
 import ru.bolotov.tradebot.broker.getLastPricesSync
 import ru.bolotov.tradebot.broker.getShareByUidSync
+import ru.bolotov.tradebot.strategy.data.InstrumentInfo
 import ru.ttech.piapi.core.MarketDataServiceSync
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
@@ -25,13 +26,8 @@ class MarketDataProvider(
     private val instrumentsService: InstrumentsServiceSync
 ) {
     private val instrumentCache = ConcurrentHashMap<String, InstrumentInfo>()
+    private val lastFailureLogAt = ConcurrentHashMap<String, Instant>()
     private val calculationContext = MathContext.DECIMAL64
-
-    data class InstrumentInfo(
-        val ticker: String,
-        val name: String,
-        val lotSize: Int
-    )
 
     /**
      * Собирает единый снимок рынка по инструменту только из закрытых M5-свечей.
@@ -51,7 +47,10 @@ class MarketDataProvider(
             val currentPrice = quotationToBigDecimal(lastPrice.price)
 
             val now = Instant.now()
-            val historicalFrom = now.minusSeconds(HISTORICAL_LOOKBACK_SECONDS)
+            val historicalFrom = CandleHistoryWindow.earliestAllowedFrom(
+                now = now,
+                interval = CandleInterval.CANDLE_INTERVAL_5_MIN
+            )
             val candles = marketDataService.getCandlesSync(
                 instrumentUid,
                 historicalFrom,
@@ -85,6 +84,8 @@ class MarketDataProvider(
                     "ATR=${formatIndicator(atr)}"
             }
 
+            lastFailureLogAt.remove(instrumentUid)
+
             MarketData(
                 instrumentId = instrumentUid,
                 instrumentName = displayName,
@@ -107,7 +108,7 @@ class MarketDataProvider(
                 strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey)
             )
         } catch (e: Exception) {
-            logger.error(e) { "Ошибка получения данных для $instrumentUid" }
+            logMarketDataFailure(instrumentUid, e)
             null
         }
     }
@@ -306,7 +307,20 @@ class MarketDataProvider(
         ?.toPlainString()
         ?: "нет данных"
 
+    /** Не даёт одной недоступной котировке засорять журнал одинаковыми stack trace. */
+    private fun logMarketDataFailure(instrumentUid: String, error: Exception) {
+        val now = Instant.now()
+        val previous = lastFailureLogAt[instrumentUid]
+        if (previous != null && now.isBefore(previous.plusSeconds(FAILURE_LOG_INTERVAL_SECONDS))) return
+
+        lastFailureLogAt[instrumentUid] = now
+        logger.warn {
+            "Не удалось получить рыночные данные для $instrumentUid: " +
+                "${error.message ?: error.javaClass.simpleName}"
+        }
+    }
+
     private companion object {
-        const val HISTORICAL_LOOKBACK_SECONDS = 10L * 24 * 60 * 60
+        const val FAILURE_LOG_INTERVAL_SECONDS = 60L
     }
 }

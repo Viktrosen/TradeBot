@@ -9,12 +9,14 @@ import java.math.BigDecimal
 
 private val logger = KotlinLogging.logger {}
 
+/** Публикует доменные изменения бота в RabbitMQ для backend и WebSocket-клиентов. */
 @Service
 class EventPublisherService(
     private val rabbitTemplate: RabbitTemplate,
     private val objectMapper: ObjectMapper
 ) {
 
+    /** Сообщает о подтверждённом исполнении открытия или закрытия позиции. */
     fun publishTradeExecuted(trade: TradeEvent) {
         try {
             val message = objectMapper.writeValueAsString(
@@ -30,6 +32,7 @@ class EventPublisherService(
         }
     }
 
+    /** Отправляет обновлённые значения портфеля и свободных средств. */
     fun publishPortfolioChanged(
         totalValue: BigDecimal? = null,
         availableCash: BigDecimal? = null,
@@ -49,6 +52,7 @@ class EventPublisherService(
         logger.debug { "Опубликовано событие portfolio.changed" }
     }
 
+    /** Публикует текущую цену и нереализованный PnL открытой позиции. */
     fun publishPositionPriceUpdated(
         position: OpenPosition,
         currentPrice: BigDecimal
@@ -75,6 +79,7 @@ class EventPublisherService(
         rabbitTemplate.convertAndSend("trade.events", "position.price.updated", message)
     }
 
+    /** Уведомляет потребителей, что состав открытых позиций изменился. */
     fun publishPositionsChanged() {
         val message = objectMapper.writeValueAsString(
             mapOf(
@@ -85,6 +90,7 @@ class EventPublisherService(
         rabbitTemplate.convertAndSend("trade.events", "positions.changed", message)
     }
 
+    /** Публикует переход бота в RUNNING или STOPPED. */
     fun publishBotStatusChanged(status: String) {
         val message = objectMapper.writeValueAsString(
             mapOf(
@@ -96,6 +102,7 @@ class EventPublisherService(
         logger.info { "Опубликовано событие bot.status.changed: $status" }
     }
 
+    /** Публикует статус доступности торгов по активным инструментам. */
     fun publishTradingAvailabilityChanged(
         tradingAvailability: Map<String, Boolean>,
         allTradingUnavailable: Boolean
@@ -117,6 +124,7 @@ class EventPublisherService(
         rabbitTemplate.convertAndSend("trade.events", "trading.availability.changed", message)
     }
 
+    /** Периодически подтверждает доступность процесса бота. */
     fun publishBotHeartbeat(isRunning: Boolean) {
         val message = objectMapper.writeValueAsString(
             mapOf(
@@ -127,6 +135,7 @@ class EventPublisherService(
         rabbitTemplate.convertAndSend("trade.events", "bot.heartbeat", message)
     }
 
+    /** Предупреждает клиент о достижении ограничения загрузки капитала. */
     fun publishCapitalUsageLimitReached(usagePercent: Double, limitPercent: Double) {
         val message = objectMapper.writeValueAsString(mapOf("eventType" to "CAPITAL_USAGE_LIMIT_REACHED", "data" to mapOf("usagePercent" to usagePercent, "limitPercent" to limitPercent)))
         rabbitTemplate.convertAndSend("trade.events", "capital.usage.limit.reached", message)

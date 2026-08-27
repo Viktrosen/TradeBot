@@ -16,27 +16,33 @@ import java.time.Instant
 
 private val tradeEventLogger = KotlinLogging.logger {}
 
+/** Ведёт журнал торговых событий и предоставляет его для восстановления состояния и dashboard. */
 @Service
 class TradeEventService(
     private val tradeEventRepository: TradeEventRepository,
     private val candlestickPatternStrategy: ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 ) {
 
+    /** Проверяет, есть ли уже финальное закрытие позиции. */
     fun hasCloseEvent(positionId: String): Boolean =
         tradeEventRepository.existsByPositionIdAndEventType(positionId, EventType.CLOSE)
 
+    /** Возвращает исполненные закрытия для расчёта истории и метрик. */
     fun findProcessedCloseEvents(): List<TradeEvent> =
         tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(
             EventStatus.PROCESSED,
             EventType.CLOSE
         )
 
+    /** Находит исходное событие открытия позиции. */
     fun findOpenEvent(positionId: String): TradeEvent? =
         tradeEventRepository.findByPositionIdAndEventType(positionId, EventType.OPEN)
 
+    /** Возвращает идентификатор стратегии, открывшей позицию. */
     fun findEntryStrategyId(positionId: String): String? =
         findOpenEvent(positionId)?.let { event -> entryStrategyId(event.reason) }
 
+    /** Восстанавливает незакрытые позиции из журнала событий. */
     fun findUnclosedPositions(): List<OpenPosition> =
         tradeEventRepository.findByStatusAndEventTypeOrderByProcessedAtDesc(EventStatus.PROCESSED, EventType.OPEN)
             .asSequence()

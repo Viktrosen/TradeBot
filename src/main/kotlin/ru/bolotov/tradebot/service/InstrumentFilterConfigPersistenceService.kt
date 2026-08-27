@@ -8,10 +8,12 @@ import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
+/** Читает и сохраняет единственную конфигурацию фильтров инструментов в БД. */
 @Service
 class InstrumentFilterConfigPersistenceService(
     private val repository: InstrumentFilterConfigRepository
 ) {
+    /** Возвращает сохранённую конфигурацию, создавая безопасную начальную при отсутствии записи. */
     fun loadConfig(): InstrumentFilterConfigEntity {
         return try {
             val entity = repository.findById("current").orElse(null)
@@ -33,6 +35,7 @@ class InstrumentFilterConfigPersistenceService(
         }
     }
 
+    /** Полностью заменяет текущую конфигурацию фильтров отбора. */
     fun saveConfig(
         minDailyVolume: Long,
         minVolatility: Double,

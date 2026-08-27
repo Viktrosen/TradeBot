@@ -7,6 +7,7 @@ import ru.bolotov.tradebot.strategy.StrategyManager
 
 private val strategyConfigurationLogger = KotlinLogging.logger {}
 
+/** Применяет, сохраняет и отдаёт настройки стратегий для адаптивного выбора. */
 @Service
 class TradingStrategyConfigurationService(
     private val strategyManager: StrategyManager,
@@ -14,6 +15,7 @@ class TradingStrategyConfigurationService(
     private val strategyConfigPersistenceService: StrategyConfigPersistenceService
 ) {
 
+    /** Загружает конфигурации всех стратегий после запуска бота. */
     suspend fun loadConfigurations() {
         try {
             val configurations = strategyConfigPersistenceService.loadConfigurations()
@@ -26,24 +28,28 @@ class TradingStrategyConfigurationService(
         }
     }
 
+    /** Сохраняет выбор простой стратегии для совместимости с ручным режимом. */
     fun switchToSimpleStrategy(strategyName: String) {
         strategyManager.switchToSimpleStrategy(strategyName)
         strategyConfigPersistenceService.saveSimpleStrategy(strategyName)
         strategyConfigurationLogger.info { "Стратегия переключена на: $strategyName" }
     }
 
+    /** Применяет и сохраняет веса индикаторов голосующей стратегии. */
     fun switchToVotingStrategy(weights: Map<String, Int>) {
         strategyManager.configureVotingStrategy(weights)
         strategyConfigPersistenceService.saveVotingStrategy(weights)
         strategyConfigurationLogger.info { "Стратегия переключена на голосование: $weights" }
     }
 
+    /** Применяет и сохраняет обязательные подтверждающие индикаторы. */
     fun switchToConfirmationStrategy(requiredIndicators: List<String>) {
         strategyManager.configureConfirmationStrategy(requiredIndicators)
         strategyConfigPersistenceService.saveConfirmationStrategy(requiredIndicators)
         strategyConfigurationLogger.info { "Стратегия переключена на подтверждение: $requiredIndicators" }
     }
 
+    /** Применяет и сохраняет таймфрейм и порог уверенности свечной стратегии. */
     fun switchToCandlestickStrategy(
         timeframe: CandlestickPatternStrategy.CandleTimeframe,
         minConfidence: Double
@@ -58,6 +64,7 @@ class TradingStrategyConfigurationService(
         }
     }
 
+    /** Формирует актуальные настройки всех стратегий для клиентского API. */
     fun getConfigurations(): Map<String, Any> = mapOf(
         "candlestick" to mapOf(
             "timeframe" to candlestickPatternStrategy.currentTimeframe.name,

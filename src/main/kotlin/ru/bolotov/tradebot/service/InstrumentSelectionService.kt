@@ -2,19 +2,27 @@ package ru.bolotov.tradebot.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
+import ru.bolotov.tradebot.service.data.InstrumentSelectionFilters
 import ru.bolotov.tradebot.config.InstrumentFilterProperties
 
 private val instrumentSelectionLogger = KotlinLogging.logger {}
 
+/** Управляет сохранёнными фильтрами и объединяет результаты рескана с открытыми позициями. */
 @Service
 class InstrumentSelectionService(
     private val instrumentSelector: InstrumentSelector,
     private val filterProperties: InstrumentFilterProperties,
     private val instrumentFilterConfigPersistenceService: InstrumentFilterConfigPersistenceService
 ) {
-    data class Filters(val minDailyVolume: Long, val minVolatility: Double, val maxVolatility: Double, val maxCount: Int)
-    fun getFilters() = Filters(filterProperties.minDailyVolume, filterProperties.minVolatility, filterProperties.maxVolatility, filterProperties.maxCount)
+    /** Возвращает актуальные фильтры в виде DTO для внутреннего API. */
+    fun getFilters() = InstrumentSelectionFilters(
+        minDailyVolume = filterProperties.minDailyVolume,
+        minVolatility = filterProperties.minVolatility,
+        maxVolatility = filterProperties.maxVolatility,
+        maxCount = filterProperties.maxCount
+    )
 
+    /** Загружает ранее сохранённые фильтры в используемую конфигурацию. */
     fun loadFilterConfiguration() {
         val config = instrumentFilterConfigPersistenceService.loadConfig()
         filterProperties.minDailyVolume = config.minDailyVolume
@@ -23,6 +31,7 @@ class InstrumentSelectionService(
         filterProperties.maxCount = config.maxCount
     }
 
+    /** Выполняет отбор инструментов по текущим ограничениям. */
     suspend fun selectByCurrentFilters(): List<SelectedInstrument> =
         instrumentSelector.selectTradableInstruments(
             minDailyVolume = filterProperties.minDailyVolume,
@@ -31,6 +40,7 @@ class InstrumentSelectionService(
             maxCount = filterProperties.maxCount
         )
 
+    /** Сохраняет в активном списке инструменты с уже открытыми позициями независимо от рескана. */
     fun mergeWithOpenPositions(
         selectedInstruments: List<SelectedInstrument>,
         openPositionInstrumentIds: Set<String>
@@ -45,6 +55,7 @@ class InstrumentSelectionService(
         return activeInstruments
     }
 
+    /** Валидно сохранённые клиентом ограничения применяет к следующему рескану. */
     fun updateFilters(minDailyVolume: Long, minVolatility: Double, maxVolatility: Double, maxCount: Int) {
         filterProperties.minDailyVolume = minDailyVolume
         filterProperties.minVolatility = minVolatility

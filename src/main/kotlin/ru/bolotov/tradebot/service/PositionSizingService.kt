@@ -10,11 +10,13 @@ import java.math.RoundingMode
 
 private val logger = KotlinLogging.logger {}
 
+/** Рассчитывает безопасный размер новой позиции с учётом капитала и риск-лимитов. */
 @Service
 class PositionSizingService(
     private val config: PositionSizingConfig,
     private val eventPublisherService: EventPublisherService
 ) {
+    /** Возвращает разрешённый размер позиции либо детальную причину отказа. */
     fun calculatePositionSize(
         marketData: MarketData,
         portfolioCapital: BigDecimal,
@@ -51,6 +53,7 @@ class PositionSizingService(
         return PositionSizingResult.Allowed(positionSize)
     }
 
+    /** Приводит рассчитанное число лотов к ограничениям конкретного инструмента у брокера. */
     fun applyBrokerLimits(
         positionSize: PositionSize,
         marketData: MarketData,

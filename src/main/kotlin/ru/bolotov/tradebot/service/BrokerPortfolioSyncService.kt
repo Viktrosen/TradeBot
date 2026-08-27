@@ -8,6 +8,9 @@ import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.EventType
 import ru.bolotov.tradebot.domain.model.OrderDirection
 import ru.bolotov.tradebot.domain.model.PositionSide
+import ru.bolotov.tradebot.service.data.BrokerPortfolioPosition
+import ru.bolotov.tradebot.service.data.BrokerPortfolioRestoreResult
+import ru.bolotov.tradebot.service.data.RestorableInstrumentInfo
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.MarketDataProvider
 import ru.tinkoff.piapi.contract.v1.Quotation
@@ -20,6 +23,7 @@ import java.util.UUID
 
 private val portfolioSyncLogger = KotlinLogging.logger {}
 
+/** Сверяет локальные позиции с портфелем брокера и восстанавливает их после запуска. */
 @Service
 class BrokerPortfolioSyncService(
     private val operationsService: OperationsServiceSync,
@@ -29,6 +33,7 @@ class BrokerPortfolioSyncService(
     private val positionSizingConfig: PositionSizingConfig
 ) {
 
+    /** Возвращает количества всех инструментов брокерского портфеля одним пакетным запросом. */
     fun getBrokerPositionQuantities(accountId: String): Map<String, BigDecimal> = runCatching {
         brokerPositions(accountId)
             .asSequence()
@@ -37,6 +42,7 @@ class BrokerPortfolioSyncService(
         portfolioSyncLogger.error(error) { "Не удалось получить пакетное состояние портфеля брокера" }
     }.getOrThrow()
 
+    /** Находит LONG у брокера для SELL-сигнала, если локальное состояние ещё не содержит позицию. */
     fun synchronizeLongPositionForSell(
         accountId: String?,
         marketData: MarketData,
@@ -92,6 +98,7 @@ class BrokerPortfolioSyncService(
         }
     }
 
+    /** Восстанавливает только распознанные позиции бота и не принимает внешние шорты за свои. */
     suspend fun restorePositions(accountId: String?): BrokerPortfolioRestoreResult {
         if (accountId == null) {
             portfolioSyncLogger.warn { "Восстановление позиций пропущено: брокерский счёт не выбран" }
@@ -290,26 +297,8 @@ class BrokerPortfolioSyncService(
                 )
             }
 
-    private data class RestorableInstrumentInfo(
-        val ticker: String,
-        val name: String,
-        val instrumentType: String,
-        val lotSize: Int
-    )
-
-    private data class BrokerPortfolioPosition(
-        val instrumentId: String,
-        val quantity: BigDecimal,
-        val averagePositionPrice: BigDecimal
-    )
-
     private companion object {
         val IGNORED_BROKER_POSITION_TYPES = setOf("currency")
         val IGNORED_BROKER_POSITION_UIDS = setOf("a92e2e25-a698-45cc-a781-167cf465257c")
     }
 }
-
-data class BrokerPortfolioRestoreResult(
-    val positions: Map<String, OpenPosition>,
-    val instrumentIds: List<String>
-)

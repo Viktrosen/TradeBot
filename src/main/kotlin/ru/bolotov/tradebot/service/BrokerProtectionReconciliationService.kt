@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private val reconciliationLogger = KotlinLogging.logger {}
 
+/** Сверяет локальные позиции и защитные заявки с брокером после событий и по расписанию. */
 @Service
 class BrokerProtectionReconciliationService(
     private val investApi: InvestApi,
@@ -53,6 +54,7 @@ class BrokerProtectionReconciliationService(
     private var periodicJob: Job? = null
     private var reconnectAttempt = 0
 
+    /** Запускает поток исполнений и резервную периодическую сверку для выбранного счёта. */
     fun start(
         accountId: String,
         positionsProvider: () -> Collection<OpenPosition>,
@@ -70,6 +72,7 @@ class BrokerProtectionReconciliationService(
         requestReconciliation("запуск")
     }
 
+    /** Останавливает поток и фоновые задачи сверки при остановке бота. */
     fun stop() {
         started.set(false)
         streamJob?.cancel()
@@ -79,6 +82,7 @@ class BrokerProtectionReconciliationService(
         reconnectAttempt = 0
     }
 
+    /** Ставит внеплановую сверку в очередь после события, способного изменить позицию. */
     fun requestReconciliation(reason: String) {
         if (sandboxEnabled || accountId == null || !reconciliationInProgress.compareAndSet(false, true)) return
 
@@ -91,6 +95,7 @@ class BrokerProtectionReconciliationService(
         }
     }
 
+    /** Выполняет начальную сверку портфеля и защитных заявок после запуска. */
     suspend fun reconcileAtStartup(
         accountId: String,
         positions: Collection<OpenPosition>,

@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.strategy.MarketData
+import ru.bolotov.tradebot.strategy.regime.data.RegimeState
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.concurrent.ConcurrentHashMap
@@ -133,12 +134,6 @@ class MarketRegimeService(
             .toDouble()
 
     private fun format(value: Double): String = "%.2f".format(value)
-
-    private data class RegimeState(
-        val regime: MarketRegime = MarketRegime.UNCERTAIN,
-        val candidate: MarketRegime = MarketRegime.UNCERTAIN,
-        val consecutiveCandles: Int = 0
-    )
 
     private companion object {
         const val PERCENT_SCALE = 8

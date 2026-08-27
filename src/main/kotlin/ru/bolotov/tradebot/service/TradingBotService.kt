@@ -42,6 +42,7 @@ import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import ru.bolotov.tradebot.service.data.AiFilterResult
 import ru.bolotov.tradebot.service.data.BotSignal
 import ru.bolotov.tradebot.service.data.CloseReason
+import ru.bolotov.tradebot.service.data.ManualCloseResult
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.LastPriceInstrument
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
@@ -58,6 +59,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private val logger = KotlinLogging.logger {}
 
+/** Центральный оркестратор состояния бота, рыночного стрима и адаптивных торговых решений. */
 @Service
 class TradingBotService(
     private val marketDataProvider: MarketDataProvider,
@@ -132,6 +134,7 @@ class TradingBotService(
      * Запускает поток котировок, периодические проверки брокерской защиты и
      * переотбор инструментов. Повторный запуск не создаёт дублирующие потоки.
      */
+    /** Инициализирует счёт, состояние и стрим цен, после чего разрешает торговлю. */
     suspend fun start() {
         if (_isRunning.value) {
             logger.warn { "Бот уже запущен" }
@@ -153,6 +156,7 @@ class TradingBotService(
     }
 
     /** Останавливает все фоновые потоки бота, не закрывая позиции. */
+    /** Останавливает торговые потоки, но не закрывает существующие позиции. */
     fun stop() {
         _isRunning.value = false
         priceStreamJob?.cancel()
@@ -167,6 +171,7 @@ class TradingBotService(
      * Повторно отбирает торговые инструменты по сохранённым фильтрам и безопасно
      * перезапускает поток цен. Уже открытые позиции остаются в списке наблюдения.
      */
+    /** Повторно отбирает инструменты и сохраняет открытые позиции в активном списке. */
     suspend fun rescanInstruments(): List<String> {
         if (!isRescanningInstruments.compareAndSet(false, true)) {
             logger.warn { "Рескан инструментов уже выполняется, новый запуск пропущен" }
@@ -191,6 +196,7 @@ class TradingBotService(
         }
     }
 
+    /** Заменяет список активных инструментов и переподписывает поток цен. */
     fun updateInstruments(instruments: List<String>) {
         _activeInstruments.value = instruments
         publishTradingAvailabilityIfChanged()
@@ -198,6 +204,7 @@ class TradingBotService(
         restartPriceStreamIfRunning()
     }
 
+    /** Сохраняет фильтры отбора без неявного запуска рескана. */
     fun updateInstrumentFilters(
         minDailyVolume: Long,
         minVolatility: Double,
@@ -208,26 +215,31 @@ class TradingBotService(
         logger.info { "Для применения новых фильтров вызовите /internal/command/instruments/rescan" }
     }
 
+    /** Сохраняет настройки простой стратегии. */
     fun switchToSimpleStrategy(strategyName: String) {
         strategyConfigurationService.switchToSimpleStrategy(strategyName)
         restartPriceStreamIfRunning()
     }
 
+    /** Сохраняет настройки голосующей стратегии. */
     fun switchToVotingStrategy(weights: Map<String, Int>) {
         strategyConfigurationService.switchToVotingStrategy(weights)
         restartPriceStreamIfRunning()
     }
 
+    /** Сохраняет настройки стратегии подтверждения. */
     fun switchToConfirmationStrategy(requiredIndicators: List<String>) {
         strategyConfigurationService.switchToConfirmationStrategy(requiredIndicators)
         restartPriceStreamIfRunning()
     }
 
+    /** Сохраняет настройки свечного анализа для адаптивного выбора режима. */
     fun switchToCandlestickStrategy(timeframe: CandlestickPatternStrategy.CandleTimeframe, minConfidence: Double) {
         strategyConfigurationService.switchToCandlestickStrategy(timeframe, minConfidence)
         restartPriceStreamIfRunning()
     }
 
+    /** Преобразует локальные открытые позиции в ответ внутреннего API. */
     fun getOpenPositions(): List<OpenPositionResponse> {
         val positions = _openPositions.value.values.toList()
         val currentPrices = marketDataProvider.getCurrentPrices(
@@ -267,6 +279,7 @@ class TradingBotService(
             aiExplanation = aiExplanation
         )
 
+    /** Формирует единый снимок dashboard из позиций, журнала сделок и портфельных метрик. */
     fun getDashboard(): DashboardResponse {
         val closedEvents = tradeEventService.findProcessedCloseEvents()
         val todayStart = java.time.LocalDate.now()
@@ -310,8 +323,7 @@ class TradingBotService(
         )
     }
 
-    data class ManualCloseResult(val status: String, val closed: Boolean)
-
+    /** Закрывает указанную позицию вручную и синхронизирует клиентское состояние. */
     suspend fun closePosition(positionId: String): ManualCloseResult {
         val position = _openPositions.value.values.firstOrNull { it.positionId == positionId }
             ?: return ManualCloseResult("already_closed", false)
@@ -331,6 +343,7 @@ class TradingBotService(
         return if (result.closed) ManualCloseResult("closed", true) else ManualCloseResult("close_failed", false)
     }
 
+    /** Останавливает бота и инициирует аварийное закрытие всех известных позиций. */
     suspend fun emergencyStopAndCloseAllPositions() {
         stop()
         closeAllPositions()
@@ -381,7 +394,9 @@ class TradingBotService(
         }
     }
 
+    /** Возвращает текущий список инструментов, на который подписан бот. */
     fun getActiveInstruments(): List<String> = _activeInstruments.value
+    /** Загружает отображаемые клиенту тикеры и названия активных инструментов. */
     suspend fun getActiveInstrumentDetails(): List<Map<String, Any>> {
         val tradingAvailability = getTradingAvailability(_activeInstruments.value)
         return _activeInstruments.value.map { uid ->
@@ -395,13 +410,17 @@ class TradingBotService(
         }
     }
 
+    /** Показывает, закрыты ли торги одновременно по всем активным инструментам. */
     fun areAllActiveInstrumentTradingsUnavailable(): Boolean {
         val activeInstruments = _activeInstruments.value
         return activeInstruments.isNotEmpty() && getTradingAvailability(activeInstruments).values.none { it }
     }
+    /** Возвращает фактический статус запущенного торгового цикла. */
     fun getStatus(): Boolean = _isRunning.value
+    /** Возвращает отображаемую базовую стратегию; сделки выбираются адаптивно по режиму рынка. */
     fun getCurrentStrategy(): TradingStrategy = strategyManager.getCurrentStrategy()
 
+    /** Заменяет SL/TP всех открытых позиций после успешного изменения риск-настроек. */
     fun replaceActiveBrokerProtection(
         stopLossPercent: Double,
         takeProfitPercent: Double
