@@ -26,6 +26,8 @@ class MarketDataProvider(
     private val instrumentsService: InstrumentsServiceSync
 ) {
     private val instrumentCache = ConcurrentHashMap<String, InstrumentInfo>()
+    private val candleHistoryCache = ConcurrentHashMap<String, CandleHistoryCacheEntry>()
+    private val candleHistoryLocks = ConcurrentHashMap<String, Any>()
     private val lastFailureLogAt = ConcurrentHashMap<String, Instant>()
     private val calculationContext = MathContext.DECIMAL64
 
@@ -36,7 +38,7 @@ class MarketDataProvider(
      * EMA(50)/EMA(200) рассчитываются из расширенного исторического окна.
      */
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
-        logger.info { "Начинаем получение рыночных данных для $instrumentUid" }
+        logger.debug { "Начинаем получение рыночных данных для $instrumentUid" }
         return try {
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
@@ -47,42 +49,9 @@ class MarketDataProvider(
             val currentPrice = quotationToBigDecimal(lastPrice.price)
 
             val now = Instant.now()
-            val historicalFrom = CandleHistoryWindow.earliestAllowedFrom(
-                now = now,
-                interval = CandleInterval.CANDLE_INTERVAL_5_MIN
-            )
-            val candles = marketDataService.getCandlesSync(
-                instrumentUid,
-                historicalFrom,
-                now,
-                CandleInterval.CANDLE_INTERVAL_5_MIN
-            )
-                .filter { candle -> isClosed(candle, now, 5 * 60L) }
-            val closes = candles.map { quotationToBigDecimal(it.close) }
-            val volumes = candles.map { it.volume }
-
-            val currentVolume = candles.lastOrNull()?.volume ?: 0L
-            val avgVolume = if (volumes.isNotEmpty()) volumes.average().toLong() else 0L
-
-            val ema5Series = calculateEMASeries(closes, 5)
-            val ema21Series = calculateEMASeries(closes, 21)
-            val ema50Series = calculateEMASeries(closes, 50)
-            val ema200Series = calculateEMASeries(closes, 200)
-            val ema5 = ema5Series?.lastOrNull()
-            val ema21 = ema21Series?.lastOrNull()
-            val ema50 = ema50Series?.lastOrNull()
-            val ema200 = ema200Series?.lastOrNull()
-            val rsi = calculateRSI(closes, 14)
-            val macd = calculateMACD(closes)
-            val bollingerBands = calculateBollingerBands(closes, currentPrice)
-            val atr = calculateATR(candles)
-
-            logger.info {
-                "$displayName: цена=${formatIndicator(currentPrice)}, EMA5=${formatIndicator(ema5)}, " +
-                    "EMA21=${formatIndicator(ema21)}, EMA50=${formatIndicator(ema50)}, " +
-                    "EMA200=${formatIndicator(ema200)}, RSI=${rsi?.let { "%.2f".format(it) } ?: "нет данных"}, " +
-                    "ATR=${formatIndicator(atr)}"
-            }
+            val history = getCandleHistory(instrumentUid, displayName, now)
+            val indicators = history.indicators
+            val bollingerBands = calculateBollingerBands(indicators.closes, currentPrice)
 
             lastFailureLogAt.remove(instrumentUid)
 
@@ -91,26 +60,142 @@ class MarketDataProvider(
                 instrumentName = displayName,
                 currentPrice = currentPrice,
                 lotSize = instrumentInfo?.lotSize ?: 1,
-                ema5 = ema5,
-                ema21 = ema21,
-                ema50 = ema50,
-                ema200 = ema200,
-                previousEma5 = ema5Series?.dropLast(1)?.lastOrNull(),
-                previousEma21 = ema21Series?.dropLast(1)?.lastOrNull(),
-                rsi = rsi,
-                macd = macd,
+                ema5 = indicators.ema5,
+                ema21 = indicators.ema21,
+                ema50 = indicators.ema50,
+                ema200 = indicators.ema200,
+                previousEma5 = indicators.previousEma5,
+                previousEma21 = indicators.previousEma21,
+                rsi = indicators.rsi,
+                macd = indicators.macd,
                 bollingerBands = bollingerBands,
-                atr = atr,
-                volume = currentVolume,
-                avgVolume = avgVolume,
+                atr = indicators.atr,
+                volume = indicators.currentVolume,
+                avgVolume = indicators.avgVolume,
                 spread = BigDecimal.valueOf(0.1),
-                volatility = calculateVolatility(closes),
-                strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey)
+                volatility = indicators.volatility,
+                strategyCandleKey = indicators.strategyCandleKey
             )
         } catch (e: Exception) {
             logMarketDataFailure(instrumentUid, e)
             null
         }
+    }
+
+    /**
+     * Возвращает историю закрытых M5-свечей из кеша. Новая история запрашивается
+     * только при первом обращении, после закрытия следующей M5-свечи или после TTL.
+     *
+     * Кеш привязан к instrumentUid, поэтому смена набора отслеживаемых инструментов
+     * не сбрасывает уже прогретые данные. Блокировка на один инструмент исключает
+     * параллельные одинаковые запросы при серии ценовых событий.
+     */
+    private fun getCandleHistory(
+        instrumentUid: String,
+        displayName: String,
+        now: Instant
+    ): CandleHistoryCacheEntry {
+        val lock = candleHistoryLocks.computeIfAbsent(instrumentUid) { Any() }
+        return synchronized(lock) {
+            val cached = candleHistoryCache[instrumentUid]
+            when {
+                cached == null || isExpired(cached, now) -> loadFullCandleHistory(instrumentUid, displayName, now)
+                now >= cached.refreshAfter -> refreshCandleHistory(instrumentUid, displayName, cached, now)
+                else -> cached
+            }.also { refreshed -> candleHistoryCache[instrumentUid] = refreshed }
+        }
+    }
+
+    private fun loadFullCandleHistory(
+        instrumentUid: String,
+        displayName: String,
+        now: Instant
+    ): CandleHistoryCacheEntry {
+        val historicalFrom = CandleHistoryWindow.earliestAllowedFrom(now, M5_INTERVAL)
+        val candles = loadClosedCandles(instrumentUid, historicalFrom, now)
+        logger.info { "$displayName: история M5 прогрета, закрытых свечей=${candles.size}" }
+        return createCandleHistoryEntry(candles, now)
+    }
+
+    private fun refreshCandleHistory(
+        instrumentUid: String,
+        displayName: String,
+        cached: CandleHistoryCacheEntry,
+        now: Instant
+    ): CandleHistoryCacheEntry {
+        val lastCandleStart = cached.candles.lastOrNull()?.let(::candleStart)
+            ?: return loadFullCandleHistory(instrumentUid, displayName, now)
+        val newCandles = loadClosedCandles(instrumentUid, lastCandleStart.minusSeconds(M5_INTERVAL_SECONDS), now)
+        val mergedCandles = trimHistoryToAllowedWindow(cached.candles + newCandles, now)
+        if (mergedCandles == cached.candles) {
+            return cached.copy(refreshAfter = nextCandleRefreshAt(now))
+        }
+
+        val knownCandleKeys = cached.candles.mapTo(mutableSetOf(), ::strategyCandleKey)
+        val addedCandles = mergedCandles.count { strategyCandleKey(it) !in knownCandleKeys }
+        logger.info {
+            "$displayName: история M5 обновлена, добавлено закрытых свечей=$addedCandles"
+        }
+        return createCandleHistoryEntry(mergedCandles, now)
+    }
+
+    private fun loadClosedCandles(instrumentUid: String, from: Instant, now: Instant): List<HistoricCandle> =
+        marketDataService.getCandlesSync(instrumentUid, from, now, M5_INTERVAL)
+            .filter { candle -> isClosed(candle, now, M5_INTERVAL_SECONDS) }
+            .sortedBy(::candleStart)
+
+    private fun trimHistoryToAllowedWindow(candles: List<HistoricCandle>, now: Instant): List<HistoricCandle> {
+        val earliestAllowed = CandleHistoryWindow.earliestAllowedFrom(now, M5_INTERVAL)
+        return candles
+            .asSequence()
+            .filter { candleStart(it) >= earliestAllowed }
+            .associateBy(::strategyCandleKey)
+            .values
+            .sortedBy(::candleStart)
+    }
+
+    private fun createCandleHistoryEntry(candles: List<HistoricCandle>, now: Instant): CandleHistoryCacheEntry =
+        CandleHistoryCacheEntry(
+            candles = candles,
+            indicators = calculateCandleIndicators(candles),
+            loadedAt = now,
+            refreshAfter = nextCandleRefreshAt(now)
+        )
+
+    /** Рассчитывается только при изменении списка закрытых свечей. */
+    private fun calculateCandleIndicators(candles: List<HistoricCandle>): CandleIndicators {
+        val closes = candles.map { quotationToBigDecimal(it.close) }
+        val volumes = candles.map { it.volume }
+        val ema5Series = calculateEMASeries(closes, 5)
+        val ema21Series = calculateEMASeries(closes, 21)
+        val ema50Series = calculateEMASeries(closes, 50)
+        val ema200Series = calculateEMASeries(closes, 200)
+
+        return CandleIndicators(
+            closes = closes,
+            ema5 = ema5Series?.lastOrNull(),
+            ema21 = ema21Series?.lastOrNull(),
+            ema50 = ema50Series?.lastOrNull(),
+            ema200 = ema200Series?.lastOrNull(),
+            previousEma5 = ema5Series?.dropLast(1)?.lastOrNull(),
+            previousEma21 = ema21Series?.dropLast(1)?.lastOrNull(),
+            rsi = calculateRSI(closes, 14),
+            macd = calculateMACD(closes),
+            atr = calculateATR(candles),
+            currentVolume = candles.lastOrNull()?.volume ?: 0L,
+            avgVolume = if (volumes.isNotEmpty()) volumes.average().toLong() else 0L,
+            volatility = calculateVolatility(closes),
+            strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey)
+        )
+    }
+
+    private fun isExpired(entry: CandleHistoryCacheEntry, now: Instant): Boolean =
+        now >= entry.loadedAt.plusSeconds(CANDLE_CACHE_TTL_SECONDS)
+
+    private fun nextCandleRefreshAt(now: Instant): Instant {
+        val currentEpochSecond = now.epochSecond
+        val nextBoundary = (currentEpochSecond / M5_INTERVAL_SECONDS + 1) * M5_INTERVAL_SECONDS
+        return Instant.ofEpochSecond(nextBoundary + CANDLE_CLOSE_GRACE_SECONDS)
     }
 
     fun getCurrentPrices(instrumentUids: List<String>): Map<String, BigDecimal> {
@@ -294,9 +379,11 @@ class MarketDataProvider(
     }
 
     private fun isClosed(candle: HistoricCandle, now: Instant, intervalSeconds: Long): Boolean {
-        val candleStart = Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
-        return candle.isComplete && !candleStart.plusSeconds(intervalSeconds).isAfter(now)
+        return candle.isComplete && !candleStart(candle).plusSeconds(intervalSeconds).isAfter(now)
     }
+
+    private fun candleStart(candle: HistoricCandle): Instant =
+        Instant.ofEpochSecond(candle.time.seconds, candle.time.nanos.toLong())
 
     private fun strategyCandleKey(candle: HistoricCandle): String =
         "M5:${candle.time.seconds}:${candle.time.nanos}"
@@ -322,5 +409,35 @@ class MarketDataProvider(
 
     private companion object {
         const val FAILURE_LOG_INTERVAL_SECONDS = 60L
+        const val M5_INTERVAL_SECONDS = 5 * 60L
+        const val CANDLE_CLOSE_GRACE_SECONDS = 5L
+        const val CANDLE_CACHE_TTL_SECONDS = 30 * 60L
+        val M5_INTERVAL: CandleInterval = CandleInterval.CANDLE_INTERVAL_5_MIN
     }
+
+    /** Неизменяемое состояние истории одного инструмента, безопасное для выдачи из ConcurrentHashMap. */
+    private data class CandleHistoryCacheEntry(
+        val candles: List<HistoricCandle>,
+        val indicators: CandleIndicators,
+        val loadedAt: Instant,
+        val refreshAfter: Instant
+    )
+
+    /** Показатели, зависящие только от закрытых свечей; текущая цена в них не входит. */
+    private data class CandleIndicators(
+        val closes: List<BigDecimal>,
+        val ema5: BigDecimal?,
+        val ema21: BigDecimal?,
+        val ema50: BigDecimal?,
+        val ema200: BigDecimal?,
+        val previousEma5: BigDecimal?,
+        val previousEma21: BigDecimal?,
+        val rsi: Double?,
+        val macd: MacdData?,
+        val atr: BigDecimal?,
+        val currentVolume: Long,
+        val avgVolume: Long,
+        val volatility: Double,
+        val strategyCandleKey: String?
+    )
 }
