@@ -1,11 +1,8 @@
 package ru.bolotov.tradebot.strategy.regime
 
-import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.bolotov.tradebot.strategy.TradingStrategy
-
-private val strategySelectorLogger = KotlinLogging.logger {}
 
 data class StrategySelection(
     val id: String,
@@ -26,14 +23,10 @@ class MarketRegimeStrategySelector(
     /** Выбирает стратегию только для нового входа в позицию. */
     fun selectForNewPosition(regime: MarketRegime): StrategySelection? {
         val strategyId = STRATEGY_BY_REGIME[regime] ?: run {
-            strategySelectorLogger.info { "Новые входы пропущены: режим рынка $regime" }
             return null
         }
         val strategy = requireNotNull(strategyManager.getStrategyById(strategyId)) {
             "Не зарегистрирована стратегия '$strategyId' для режима $regime"
-        }
-        strategySelectorLogger.info {
-            "Для режима $regime выбрана стратегия ${strategy.name} ($strategyId)"
         }
         return StrategySelection(strategyId, strategy, regime)
     }
@@ -45,10 +38,6 @@ class MarketRegimeStrategySelector(
     ): StrategySelection? {
         val strategyId = entryStrategyId ?: return selectForNewPosition(currentRegime)
         val strategy = strategyManager.getStrategyById(strategyId) ?: run {
-            strategySelectorLogger.warn {
-                "Стратегия входа '$strategyId' больше не зарегистрирована; " +
-                    "для позиции используется стратегия по текущему режиму $currentRegime"
-            }
             return selectForNewPosition(currentRegime)
         }
         return StrategySelection(strategyId, strategy, currentRegime)

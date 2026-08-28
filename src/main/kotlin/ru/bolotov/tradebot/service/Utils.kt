@@ -6,6 +6,8 @@ import ru.bolotov.tradebot.service.data.AiFilterResult
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection as StrategyOrderDirection
 import ru.bolotov.tradebot.strategy.Signal
+import io.grpc.StatusException
+import io.grpc.StatusRuntimeException
 import ru.tinkoff.piapi.contract.v1.MoneyValue
 import ru.tinkoff.piapi.contract.v1.Quotation
 import java.math.BigDecimal
@@ -60,6 +62,13 @@ fun MoneyValue.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
 
 fun Quotation.toBigDecimal(): BigDecimal = BigDecimal.valueOf(units)
     .add(BigDecimal.valueOf(nano.toLong(), NANO_SCALE))
+
+/** Представляет ошибку gRPC компактно, чтобы не дублировать stack trace при реконнекте. */
+fun Throwable.streamErrorDescription(): String = when (this) {
+    is StatusException -> "gRPC ${status.code}: ${status.description.orEmpty()}"
+    is StatusRuntimeException -> "gRPC ${status.code}: ${status.description.orEmpty()}"
+    else -> message ?: javaClass.simpleName
+}
 
 private const val PNL_SCALE = 8
 private const val NANO_SCALE = 9

@@ -109,16 +109,17 @@ class TradingBotService(
 
     private val emergencyCloseChunkSize = 2
     private val emergencyCloseChunkDelayMs = 1500L
-    private val streamReconnectDelayMs = 5000L
     private val processedMarketCandles = ConcurrentHashMap<String, String>()
     private val processedStrategyCandles = ConcurrentHashMap<String, String>()
     private val pendingLossExitConfirmations = ConcurrentHashMap<String, String>()
     private val reentryCooldownUntil = ConcurrentHashMap<String, Instant>()
+    private val loggedStrategySelections = ConcurrentHashMap<String, String>()
     private val isRescanningInstruments = AtomicBoolean(false)
     private var isPortfolioRestored = false
     private var isClosingPositions = false
     private var nextInstrumentRescanAt: Instant = Instant.MAX
     private var lastTradingAvailability: Map<String, Boolean> = emptyMap()
+    private var streamReconnectAttempt = 0
 
     init {
         runBlocking {
@@ -551,19 +552,29 @@ class TradingBotService(
             try {
                 collectPriceStream(instruments)
                 if (!shouldReconnectPriceStream()) return
-                logger.warn { "Стрим цен завершился; выполняется переподключение из-за открытых позиций" }
+                logger.warn { "Стрим цен завершился без ошибки; будет выполнено переподключение" }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 if (!shouldReconnectPriceStream()) {
-                    logger.error(error) { "Стрим цен завершился; открытых позиций нет, переподключение не требуется" }
+                    logger.info {
+                        "Стрим цен завершился; бот остановлен или активные инструменты отсутствуют, " +
+                            "переподключение не требуется"
+                    }
                     return
                 }
-                logger.error(error) { "Ошибка стрима цен; будет выполнено переподключение" }
+                logger.warn {
+                    "Стрим цен завершился с ошибкой ${error.streamErrorDescription()}; " +
+                        "будет выполнено переподключение"
+                }
             }
 
-            logger.info { "Переподключение к стриму цен через ${streamReconnectDelayMs / 1000} сек." }
-            delay(streamReconnectDelayMs)
+            val delayMs = nextStreamReconnectDelayMs()
+            logger.info {
+                "Переподключение к стриму цен: попытка $streamReconnectAttempt, " +
+                    "инструментов=${_activeInstruments.value.size}, ожидание=${delayMs / 1000} сек."
+            }
+            delay(delayMs)
         }
     }
 
@@ -571,6 +582,7 @@ class TradingBotService(
     private suspend fun collectPriceStream(instruments: List<String>) {
         logger.info { "Подключение к стриму цен для ${instruments.size} инструментов" }
         subscribeToLastPrices(instruments)
+            .onEach { resetStreamReconnectBackoff() }
             .mapNotNull { lastPrice ->
                 logger.info { "Получена цена для ${lastPrice.instrumentUid}" }
                 enrichMarketData(lastPrice)
@@ -592,7 +604,7 @@ class TradingBotService(
     }
 
     private fun shouldReconnectPriceStream(): Boolean =
-        _isRunning.value && _openPositions.value.isNotEmpty()
+        _isRunning.value && _activeInstruments.value.isNotEmpty()
 
     private fun subscribeToLastPrices(instrumentUids: List<String>): Flow<LastPrice> = callbackFlow {
         val request = MarketDataServerSideStreamRequest.newBuilder()
@@ -612,7 +624,6 @@ class TradingBotService(
                 stream.join()
             }.onFailure { error ->
                 if (error !is CancellationException) {
-                    logger.error(error) { "Ошибка стрима цен" }
                     close(error)
                 }
             }
@@ -684,7 +695,9 @@ class TradingBotService(
 
         val regimeDecision = marketRegimeService.evaluate(marketData)
         val currentPosition = _openPositions.value[marketData.instrumentId]
-        val selection = selectStrategy(currentPosition, regimeDecision.regime) ?: return@flow
+        val selection = selectStrategy(currentPosition, regimeDecision.regime)
+        logStrategySelectionIfChanged(marketData, currentPosition, regimeDecision, selection)
+        selection ?: return@flow
         val strategyMarketData = addCandlestickContext(marketData, selection.strategy)
         if (!shouldProcessStrategyCandle(strategyMarketData, selection)) return@flow
 
@@ -814,6 +827,54 @@ class TradingBotService(
         marketRegimeStrategySelector.selectForNewPosition(regime)
     } else {
         marketRegimeStrategySelector.selectForOpenPosition(position.entryStrategyId, regime)
+    }
+
+    /** Логирует изменение стратегии ровно один раз на инструмент и новое состояние выбора. */
+    private fun logStrategySelectionIfChanged(
+        marketData: MarketData,
+        position: OpenPosition?,
+        regimeDecision: ru.bolotov.tradebot.strategy.regime.MarketRegimeDecision,
+        selection: StrategySelection?
+    ) {
+        val selectionKey = listOf(
+            position?.positionId.orEmpty(),
+            position?.entryStrategyId.orEmpty(),
+            regimeDecision.regime.name,
+            selection?.id.orEmpty()
+        ).joinToString(":")
+        if (loggedStrategySelections.put(marketData.instrumentId, selectionKey) == selectionKey) return
+
+        if (selection == null) {
+            logger.info {
+                "Стратегия инструмента ${marketData.instrumentName}: режим=${regimeDecision.regime}, " +
+                    "новые входы временно приостановлены; наблюдение и переоценка продолжаются"
+            }
+            return
+        }
+
+        val scenario = if (position == null) "новый вход" else "сопровождение позиции"
+        logger.info {
+            "Стратегия инструмента ${marketData.instrumentName}: режим=${regimeDecision.regime}, " +
+                "стратегия=${selection.strategy.name} (${selection.id}), сценарий=$scenario"
+        }
+    }
+
+    /** Возвращает очередную задержку переподключения, увеличивая её при сериях обрывов. */
+    private fun nextStreamReconnectDelayMs(): Long {
+        val delayMs = STREAM_RECONNECT_DELAYS_MS[
+            streamReconnectAttempt.coerceAtMost(STREAM_RECONNECT_DELAYS_MS.lastIndex)
+        ]
+        streamReconnectAttempt = (streamReconnectAttempt + 1)
+            .coerceAtMost(STREAM_RECONNECT_DELAYS_MS.size)
+        return delayMs
+    }
+
+    /** Сбрасывает backoff только после фактически полученной цены из нового стрима. */
+    private fun resetStreamReconnectBackoff() {
+        if (streamReconnectAttempt == 0) return
+
+        streamReconnectAttempt = 0
+        logger.info { "Стрим цен восстановлен: получена первая цена, backoff переподключения сброшен" }
     }
 
     private fun logStrategyAnalysis(
@@ -1061,5 +1122,6 @@ class TradingBotService(
     private companion object {
         const val MIN_SCHEDULER_DELAY_MS = 1_000L
         const val MARKET_DATA_TIMEFRAME_SECONDS = 5L * 60
+        val STREAM_RECONNECT_DELAYS_MS = longArrayOf(5_000, 10_000, 30_000, 60_000, 120_000)
     }
 }
