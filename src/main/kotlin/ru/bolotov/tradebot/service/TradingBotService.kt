@@ -585,8 +585,11 @@ class TradingBotService(
         subscribeToLastPrices(instruments)
             .onEach { resetStreamReconnectBackoff() }
             .mapNotNull { lastPrice ->
-                logger.info { "Получена цена для ${lastPrice.instrumentUid}" }
-                enrichMarketData(lastPrice)
+                enrichMarketData(lastPrice)?.also { marketData ->
+                    logger.info {
+                        "Получена цена для ${marketData.instrumentId} (${marketData.instrumentName})"
+                    }
+                }
             }
             .onEach(::publishPositionPriceUpdate)
             .flatMapLatest { marketData -> buildSignalFlow(marketData) }

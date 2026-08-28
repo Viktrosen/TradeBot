@@ -59,10 +59,10 @@ class MarketDataProvider(
      * индикаторы берутся из кеша закрытых M5-свечей.
      */
     suspend fun fetchMarketData(instrumentUid: String, currentPrice: BigDecimal): MarketData? {
-        logger.debug { "Обогащаем потоковую цену для $instrumentUid" }
         return try {
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
+            logger.debug { "Обогащаем потоковую цену для $instrumentUid ($displayName)" }
 
             val now = Instant.now()
             val history = getCandleHistory(instrumentUid, displayName, now)
