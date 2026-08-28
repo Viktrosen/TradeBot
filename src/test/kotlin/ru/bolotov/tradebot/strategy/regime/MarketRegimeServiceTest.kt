@@ -39,6 +39,22 @@ class MarketRegimeServiceTest {
         assertEquals(MarketRegime.FLAT, service.evaluate(marketData).regime)
     }
 
+    @Test
+    fun `classifies high relative ATR as volatile`() {
+        val service = regimeService()
+        val marketData = marketData(
+            instrumentId = "volatile",
+            price = "100",
+            ema50 = "100.1",
+            ema200 = "100",
+            atr = "1"
+        )
+
+        repeat(2) { service.evaluate(marketData) }
+
+        assertEquals(MarketRegime.VOLATILE, service.evaluate(marketData).regime)
+    }
+
     private fun regimeService() = MarketRegimeService(
         confirmationCandles = 3,
         strongTrendEmaSpreadPercent = 0.60,

@@ -91,8 +91,8 @@ class MarketRegimeService(
             return MarketRegime.UNCERTAIN
         }
 
-        val emaSpreadPercent = percentDifference(ema50, ema200)
-        val atrPercent = percentDifference(atr, marketData.currentPrice)
+        val emaSpreadPercent = relativeDifferencePercent(ema50, ema200)
+        val atrPercent = percentageOf(atr, marketData.currentPrice)
         if (atrPercent >= volatileAtrPercent) return MarketRegime.VOLATILE
 
         return when {
@@ -123,13 +123,18 @@ class MarketRegimeService(
         val ema50 = marketData.ema50 ?: return "недостаточно EMA(50)"
         val ema200 = marketData.ema200 ?: return "недостаточно EMA(200)"
         val atr = marketData.atr ?: return "недостаточно ATR"
-        return "кандидат=$candidate, EMA50/EMA200=${format(percentDifference(ema50, ema200))}%, " +
-            "ATR=${format(percentDifference(atr, marketData.currentPrice))}%"
+        return "кандидат=$candidate, EMA50/EMA200=${format(relativeDifferencePercent(ema50, ema200))}%, " +
+            "ATR=${format(percentageOf(atr, marketData.currentPrice))}%"
     }
 
-    private fun percentDifference(value: BigDecimal, base: BigDecimal): Double =
+    private fun relativeDifferencePercent(value: BigDecimal, base: BigDecimal): Double =
         value.subtract(base)
             .multiply(BigDecimal(100))
+            .divide(base, PERCENT_SCALE, RoundingMode.HALF_UP)
+            .toDouble()
+
+    private fun percentageOf(value: BigDecimal, base: BigDecimal): Double =
+        value.multiply(BigDecimal(100))
             .divide(base, PERCENT_SCALE, RoundingMode.HALF_UP)
             .toDouble()
 
