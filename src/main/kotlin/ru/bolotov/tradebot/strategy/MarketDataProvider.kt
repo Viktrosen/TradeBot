@@ -6,11 +6,11 @@ import ru.bolotov.tradebot.broker.getCandlesSync
 import ru.bolotov.tradebot.broker.getInstrumentByUIDSync
 import ru.bolotov.tradebot.broker.getLastPricesSync
 import ru.bolotov.tradebot.broker.getShareByUidSync
+import ru.bolotov.tradebot.broker.toBigDecimal
 import ru.bolotov.tradebot.strategy.data.InstrumentInfo
 import ru.ttech.piapi.core.MarketDataServiceSync
 import ru.tinkoff.piapi.contract.v1.CandleInterval
 import ru.tinkoff.piapi.contract.v1.HistoricCandle
-import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.ttech.piapi.core.InstrumentsServiceSync
 import java.math.BigDecimal
 import java.math.MathContext
@@ -36,17 +36,33 @@ class MarketDataProvider(
      *
      * Снимок используют и стратегии, и определитель режима рынка, поэтому
      * EMA(50)/EMA(200) рассчитываются из расширенного исторического окна.
+     *
+     * Используется вне ценового стрима, когда свежая цена ещё не передана
+     * вызывающим кодом. Обработчик стрима должен использовать перегрузку с
+     * [currentPrice], чтобы не делать повторный запрос к T-Invest API.
      */
     suspend fun fetchMarketData(instrumentUid: String): MarketData? {
-        logger.debug { "Начинаем получение рыночных данных для $instrumentUid" }
+        return try {
+            val lastPrice = marketDataService.getLastPricesSync(listOf(instrumentUid)).firstOrNull()
+                ?: throw IllegalStateException("Нет данных о последней цене для $instrumentUid")
+            fetchMarketData(instrumentUid, lastPrice.price.toBigDecimal())
+        } catch (e: Exception) {
+            logMarketDataFailure(instrumentUid, e)
+            null
+        }
+    }
+
+    /**
+     * Собирает рыночный снимок по цене из `LastPrice` стрима.
+     *
+     * Тиковая цена сохраняет оперативность защитных проверок, а история и
+     * индикаторы берутся из кеша закрытых M5-свечей.
+     */
+    suspend fun fetchMarketData(instrumentUid: String, currentPrice: BigDecimal): MarketData? {
+        logger.debug { "Обогащаем потоковую цену для $instrumentUid" }
         return try {
             val instrumentInfo = getInstrumentInfo(instrumentUid)
             val displayName = instrumentInfo?.ticker ?: instrumentUid.take(8)
-
-            val lastPrices = marketDataService.getLastPricesSync(listOf(instrumentUid))
-            val lastPrice = lastPrices.firstOrNull()
-                ?: throw IllegalStateException("Нет данных о последней цене для $displayName")
-            val currentPrice = quotationToBigDecimal(lastPrice.price)
 
             val now = Instant.now()
             val history = getCandleHistory(instrumentUid, displayName, now)
@@ -164,7 +180,7 @@ class MarketDataProvider(
 
     /** Рассчитывается только при изменении списка закрытых свечей. */
     private fun calculateCandleIndicators(candles: List<HistoricCandle>): CandleIndicators {
-        val closes = candles.map { quotationToBigDecimal(it.close) }
+        val closes = candles.map { it.close.toBigDecimal() }
         val volumes = candles.map { it.volume }
         val ema5Series = calculateEMASeries(closes, 5)
         val ema21Series = calculateEMASeries(closes, 21)
@@ -205,7 +221,7 @@ class MarketDataProvider(
             marketDataService
                 .getLastPricesSync(instrumentUids.distinct())
                 .associate { lastPrice ->
-                    lastPrice.instrumentUid to quotationToBigDecimal(lastPrice.price)
+                    lastPrice.instrumentUid to lastPrice.price.toBigDecimal()
                 }
         } catch (error: Exception) {
             logger.error(error) { "Не удалось получить текущие цены открытых позиций" }
@@ -220,9 +236,9 @@ class MarketDataProvider(
         val trueRanges = mutableListOf<BigDecimal>()
 
         for (i in 1 until candles.size) {
-            val high = quotationToBigDecimal(candles[i].high)
-            val low = quotationToBigDecimal(candles[i].low)
-            val prevClose = quotationToBigDecimal(candles[i - 1].close)
+            val high = candles[i].high.toBigDecimal()
+            val low = candles[i].low.toBigDecimal()
+            val prevClose = candles[i - 1].close.toBigDecimal()
 
             val tr1 = high - low
             val tr2 = (high - prevClose).let { if (it < BigDecimal.ZERO) -it else it }
@@ -274,11 +290,6 @@ class MarketDataProvider(
                 null
             }
         }
-    }
-
-    private fun quotationToBigDecimal(quotation: Quotation): BigDecimal {
-        return BigDecimal.valueOf(quotation.units)
-            .add(BigDecimal.valueOf(quotation.nano.toLong(), 9))
     }
 
     private fun calculateEMASeries(prices: List<BigDecimal>, period: Int): List<BigDecimal>? {

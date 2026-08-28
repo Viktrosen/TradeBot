@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.broker.getTradingStatusesSync
+import ru.bolotov.tradebot.broker.toBigDecimal
 import ru.bolotov.tradebot.api.ClosedTradeResponse
 import ru.bolotov.tradebot.api.DashboardMetricsResponse
 import ru.bolotov.tradebot.api.DashboardResponse
@@ -646,7 +647,10 @@ class TradingBotService(
      */
     private suspend fun enrichMarketData(lastPrice: LastPrice): MarketData? {
         return try {
-            marketDataProvider.fetchMarketData(lastPrice.instrumentUid)
+            marketDataProvider.fetchMarketData(
+                instrumentUid = lastPrice.instrumentUid,
+                currentPrice = lastPrice.price.toBigDecimal()
+            )
         } catch (e: Exception) {
             logger.error(e) { "Ошибка обогащения рыночных данных для ${lastPrice.instrumentUid}" }
             null
