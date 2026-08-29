@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
+import org.springframework.web.client.ResourceAccessException
 import ru.bolotov.tradebot.domain.model.PositionSide
 import org.springframework.web.client.RestClient
 import ru.bolotov.tradebot.service.data.AiAction
@@ -87,6 +88,14 @@ class AiTradeSignalFilter(
                     "HTTP=${error.statusCode}, провайдер=Gemini, модель=$model, " +
                     "finish_reason=${error.finishReason ?: "<не указан>"}, " +
                     "ответ AI (усечён): ${error.contentPreview}"
+            }
+            AiFilterResult(approved = false)
+        } catch (error: ResourceAccessException) {
+            val rootCause = error.mostSpecificCause
+            aiFilterLogger.warn(error) {
+                "AI-фильтр: Gemini недоступен для ${signal.actionDescription} ${marketData.instrumentName}; " +
+                    "сигнал отклонён. Причина=${rootCause.javaClass.simpleName}: " +
+                    "${rootCause.message ?: "<не указана>"}; модель=$model"
             }
             AiFilterResult(approved = false)
         } catch (error: Exception) {
