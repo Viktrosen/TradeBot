@@ -13,4 +13,13 @@ data class MarginSnapshot(
     val startingMargin: BigDecimal,
     val minimalMargin: BigDecimal,
     val missingFunds: BigDecimal
-)
+) {
+    /**
+     * Показывает, есть ли на счёте текущая маржинальная нагрузка.
+     *
+     * При её отсутствии T-Invest может вернуть нулевой уровень достаточности
+     * средств, поскольку показатель рассчитывается по уже существующим позициям.
+     */
+    fun hasCurrentMarginLoad(): Boolean =
+        startingMargin > BigDecimal.ZERO || minimalMargin > BigDecimal.ZERO
+}

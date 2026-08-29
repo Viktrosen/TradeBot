@@ -38,29 +38,41 @@ class ShortTradingRiskService(
             }
 
             val attributes = usersService.getMarginAttributesSync(accountId)
-            val sufficiency = attributes.fundsSufficiencyLevel.toBigDecimal()
-            val missingFunds = attributes.amountOfMissingFunds.toBigDecimal()
+            val margin = MarginSnapshot(
+                fundsSufficiencyLevel = attributes.fundsSufficiencyLevel.toBigDecimal(),
+                liquidPortfolio = attributes.liquidPortfolio.toBigDecimal(),
+                startingMargin = attributes.startingMargin.toBigDecimal(),
+                minimalMargin = attributes.minimalMargin.toBigDecimal(),
+                missingFunds = attributes.amountOfMissingFunds.toBigDecimal()
+            )
+            val instrumentName = instrument.ticker.ifBlank { instrumentId }
 
             when {
-                missingFunds > BigDecimal.ZERO -> {
-                    ShortRiskCheck.Rejected("Недостаточно средств для маржинальной позиции: $missingFunds RUB")
-                }
-
-                sufficiency < minimumMarginSufficiency.toBigDecimal() -> {
+                margin.missingFunds > BigDecimal.ZERO -> {
                     ShortRiskCheck.Rejected(
-                        "Недостаточный запас маржи: $sufficiency, требуется не ниже $minimumMarginSufficiency"
+                        "Недостаточно средств для маржинальной позиции: ${margin.missingFunds} RUB; " +
+                            margin.describe()
                     )
                 }
 
-                else -> ShortRiskCheck.Allowed(
-                    MarginSnapshot(
-                        fundsSufficiencyLevel = sufficiency,
-                        liquidPortfolio = attributes.liquidPortfolio.toBigDecimal(),
-                        startingMargin = attributes.startingMargin.toBigDecimal(),
-                        minimalMargin = attributes.minimalMargin.toBigDecimal(),
-                        missingFunds = missingFunds
+                margin.hasCurrentMarginLoad() &&
+                    margin.fundsSufficiencyLevel < minimumMarginSufficiency.toBigDecimal() -> {
+                    ShortRiskCheck.Rejected(
+                        "Недостаточный запас маржи: ${margin.fundsSufficiencyLevel}, " +
+                            "требуется не ниже $minimumMarginSufficiency; ${margin.describe()}"
                     )
-                )
+                }
+
+                else -> {
+                    if (!margin.hasCurrentMarginLoad()) {
+                        shortRiskLogger.info {
+                            "Шорт $instrumentName: текущая маржинальная нагрузка отсутствует; " +
+                                "порог fundsSufficiencyLevel не применяется. ${margin.describe()}; " +
+                                "допустимый объём проверяется через sell_margin_limits брокера"
+                        }
+                    }
+                    ShortRiskCheck.Allowed(margin)
+                }
             }
         }.onFailure { error ->
             shortRiskLogger.error(error) { "Не удалось проверить маржинальные риски для $instrumentId" }
@@ -68,5 +80,11 @@ class ShortTradingRiskService(
             ShortRiskCheck.Rejected("Маржинальные показатели недоступны: ${error.message}")
         }
     }
+
+    /** Формирует компактную диагностическую сводку без реквизитов счёта. */
+    private fun MarginSnapshot.describe(): String =
+        "ликвидный портфель=$liquidPortfolio, начальная маржа=$startingMargin, " +
+            "минимальная маржа=$minimalMargin, уровень достаточности=$fundsSufficiencyLevel, " +
+            "недостающие средства=$missingFunds"
 
 }
