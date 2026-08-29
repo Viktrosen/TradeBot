@@ -80,6 +80,14 @@ class AiTradeSignalFilter(
         } catch (_: AiRateLimitException) {
             blockRequestsAfterRateLimit()
             AiFilterResult(approved = false)
+        } catch (error: AiResponseFormatException) {
+            aiFilterLogger.warn(error.cause) {
+                "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
+                    "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
+                    "HTTP=${error.statusCode}, модель=$model, " +
+                    "ответ AI (усечён): ${error.contentPreview}"
+            }
+            AiFilterResult(approved = false)
         } catch (error: Exception) {
             aiFilterLogger.warn(error) {
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
@@ -95,7 +103,7 @@ class AiTradeSignalFilter(
         strategy: TradingStrategy,
         position: OpenPosition?
     ): AiDecision {
-        val responseBody = restClient.post()
+        val response = restClient.post()
             .uri("/chat/completions")
             .contentType(MediaType.APPLICATION_JSON)
             .header("Authorization", "Bearer $apiKey")
@@ -109,12 +117,20 @@ class AiTradeSignalFilter(
                     if (response.statusCode.isError) {
                         error("OpenRouter вернул HTTP ${response.statusCode.value()}")
                     }
-                    responseBody
+                    OpenRouterResponse(response.statusCode.value(), responseBody)
                 }
             }
             ?: error("OpenRouter вернул пустой ответ")
 
-        return parseDecision(objectMapper.readTree(responseBody))
+        return try {
+            parseDecision(objectMapper.readTree(response.body))
+        } catch (error: Exception) {
+            throw AiResponseFormatException(
+                statusCode = response.statusCode,
+                contentPreview = responseContentPreview(response.body),
+                cause = error
+            )
+        }
     }
 
     private fun createRequest(
@@ -162,6 +178,22 @@ class AiTradeSignalFilter(
         }
         return content.substring(startIndex, endIndex + 1)
     }
+
+    /**
+     * Возвращает безопасный фрагмент ответа для диагностики несовместимого формата.
+     * Полный ответ не логируется, чтобы не раздувать логи и не сохранять лишние данные.
+     */
+    private fun responseContentPreview(responseBody: String): String = runCatching {
+        objectMapper.readTree(responseBody)
+            .path("choices")
+            .path(0)
+            .path("message")
+            .path("content")
+            .asText()
+    }.getOrDefault(responseBody)
+        .replace(Regex("\\s+"), " ")
+        .take(RESPONSE_PREVIEW_MAX_LENGTH)
+        .ifBlank { "<пусто>" }
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
         aiFilterLogger.info {
@@ -249,6 +281,7 @@ class AiTradeSignalFilter(
         const val MAX_COMPLETION_TOKENS = 180
         const val NANOS_IN_MILLISECOND = 1_000_000L
         const val HTTP_TOO_MANY_REQUESTS = 429
+        const val RESPONSE_PREVIEW_MAX_LENGTH = 400
         val RATE_LIMIT_BACKOFF_SECONDS = listOf(10L, 20L, 40L, 80L, 160L, 300L)
 
         const val SYSTEM_PROMPT = """
@@ -281,3 +314,14 @@ class AiTradeSignalFilter(
 }
 
 private class AiRateLimitException : RuntimeException("OpenRouter вернул HTTP 429")
+
+private data class OpenRouterResponse(
+    val statusCode: Int,
+    val body: String
+)
+
+private class AiResponseFormatException(
+    val statusCode: Int,
+    val contentPreview: String,
+    cause: Throwable
+) : RuntimeException(cause.message, cause)
