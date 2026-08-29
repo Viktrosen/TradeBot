@@ -586,7 +586,7 @@ class TradingBotService(
             .onEach { resetStreamReconnectBackoff() }
             .mapNotNull { lastPrice ->
                 enrichMarketData(lastPrice)?.also { marketData ->
-                    logger.info {
+                    logger.debug {
                         "Получена цена для ${marketData.instrumentId} (${marketData.instrumentName})"
                     }
                 }
