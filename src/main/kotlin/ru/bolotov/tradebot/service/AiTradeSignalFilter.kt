@@ -151,7 +151,8 @@ class AiTradeSignalFilter(
                 )
             )
         ),
-        "response_format" to JSON_OBJECT_RESPONSE_FORMAT
+        "response_format" to JSON_OBJECT_RESPONSE_FORMAT,
+        "reasoning" to REASONING_DISABLED
     )
 
     private fun parseDecision(response: JsonNode): AiDecision {
@@ -310,6 +311,12 @@ class AiTradeSignalFilter(
         """
 
         val JSON_OBJECT_RESPONSE_FORMAT = mapOf("type" to "json_object")
+
+        /** Отключает reasoning, чтобы ответ целиком был кратким JSON-решением. */
+        val REASONING_DISABLED = mapOf(
+            "effort" to "none",
+            "exclude" to true
+        )
     }
 }
 
