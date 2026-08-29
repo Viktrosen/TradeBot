@@ -25,11 +25,11 @@ private val aiFilterLogger = KotlinLogging.logger {}
 /** Запрашивает AI как консервативный дополнительный фильтр торговых сигналов. */
 @Service
 class AiTradeSignalFilter(
-    @Qualifier("openRouterRestClient") private val restClient: RestClient,
+    @Qualifier("geminiRestClient") private val restClient: RestClient,
     private val objectMapper: ObjectMapper,
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
-    @Value("\${ai.openrouter.api-key:}") private val apiKey: String,
-    @Value("\${ai.openrouter.model:openai/gpt-4o}") private val model: String,
+    @Value("\${ai.gemini.api-key:}") private val apiKey: String,
+    @Value("\${ai.gemini.model:gemini-2.5-flash-lite}") private val model: String,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
     @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
@@ -42,10 +42,10 @@ class AiTradeSignalFilter(
         when {
             !enabled -> aiFilterLogger.info { "AI-фильтр отключён настройкой AI_ENABLED" }
             apiKey.isBlank() -> aiFilterLogger.error {
-                "AI-фильтр включён, но OPENROUTER_API_KEY не задан; сигналы покупки будут отклоняться"
+                "AI-фильтр включён, но GEMINI_API_KEY не задан; сигналы открытия будут отклоняться"
             }
 
-            else -> aiFilterLogger.info { "AI-фильтр включён, модель: $model" }
+            else -> aiFilterLogger.info { "AI-фильтр включён, провайдер=Gemini, модель: $model" }
         }
     }
 
@@ -58,7 +58,7 @@ class AiTradeSignalFilter(
     ): AiFilterResult {
         if (!enabled) return AiFilterResult(approved = true)
         if (apiKey.isBlank()) {
-            aiFilterLogger.error { "AI-фильтр включён, но OPENROUTER_API_KEY не задан; сигнал отклонён" }
+            aiFilterLogger.error { "AI-фильтр включён, но GEMINI_API_KEY не задан; сигнал отклонён" }
             return AiFilterResult(approved = false)
         }
         if (isRateLimited()) return AiFilterResult(approved = false)
@@ -84,7 +84,7 @@ class AiTradeSignalFilter(
             aiFilterLogger.warn(error.cause) {
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
-                    "HTTP=${error.statusCode}, модель=$model, " +
+                    "HTTP=${error.statusCode}, провайдер=Gemini, модель=$model, " +
                     "finish_reason=${error.finishReason ?: "<не указан>"}, " +
                     "ответ AI (усечён): ${error.contentPreview}"
             }
@@ -105,9 +105,9 @@ class AiTradeSignalFilter(
         position: OpenPosition?
     ): AiDecision {
         val response = restClient.post()
-            .uri("/chat/completions")
+            .uri("/models/{model}:generateContent", model)
             .contentType(MediaType.APPLICATION_JSON)
-            .header("Authorization", "Bearer $apiKey")
+            .header(GEMINI_API_KEY_HEADER, apiKey)
             .body(createRequest(marketData, signal, strategy, position))
             .exchange { _, response ->
                 response.body.bufferedReader().use { reader ->
@@ -116,12 +116,12 @@ class AiTradeSignalFilter(
                         throw AiRateLimitException()
                     }
                     if (response.statusCode.isError) {
-                        error("OpenRouter вернул HTTP ${response.statusCode.value()}")
+                        throw AiProviderException(response.statusCode.value(), responseBody)
                     }
-                    OpenRouterResponse(response.statusCode.value(), responseBody)
+                    GeminiResponse(response.statusCode.value(), responseBody)
                 }
             }
-            ?: error("OpenRouter вернул пустой ответ")
+            ?: error("Gemini вернул пустой ответ")
 
         return try {
             parseDecision(objectMapper.readTree(response.body))
@@ -141,30 +141,40 @@ class AiTradeSignalFilter(
         strategy: TradingStrategy,
         position: OpenPosition?
     ): Map<String, Any> = mapOf(
-        "model" to model,
-        "temperature" to 0,
-        "max_tokens" to MAX_COMPLETION_TOKENS,
-        "messages" to listOf(
-            mapOf("role" to "system", "content" to SYSTEM_PROMPT),
+        "systemInstruction" to mapOf(
+            "parts" to listOf(mapOf("text" to SYSTEM_PROMPT))
+        ),
+        "contents" to listOf(
             mapOf(
                 "role" to "user",
-                "content" to objectMapper.writeValueAsString(
-                    AiTradeContext.from(marketData, signal, strategy, position)
+                "parts" to listOf(
+                    mapOf(
+                        "text" to objectMapper.writeValueAsString(
+                            AiTradeContext.from(marketData, signal, strategy, position)
+                        )
+                    )
                 )
             )
         ),
-        "response_format" to JSON_OBJECT_RESPONSE_FORMAT,
-        "reasoning" to REASONING_DISABLED
+        "generationConfig" to mapOf(
+            "temperature" to 0,
+            "maxOutputTokens" to MAX_COMPLETION_TOKENS,
+            "responseMimeType" to "application/json",
+            "responseJsonSchema" to AI_DECISION_JSON_SCHEMA,
+            "thinkingConfig" to mapOf("thinkingBudget" to 0)
+        )
     )
 
     private fun parseDecision(response: JsonNode): AiDecision {
-        val content = response.path("choices")
+        val content = response.path("candidates")
             .path(0)
-            .path("message")
             .path("content")
+            .path("parts")
+            .path(0)
+            .path("text")
             .asText()
             .takeIf(String::isNotBlank)
-            ?: error("Ответ OpenRouter не содержит решения")
+            ?: error("Ответ Gemini не содержит решения")
 
         val decision = objectMapper.readValue(extractJsonObject(content), AiDecision::class.java)
             ?: error("Ответ AI не содержит решения")
@@ -188,20 +198,22 @@ class AiTradeSignalFilter(
      */
     private fun responseContentPreview(responseBody: String): String = runCatching {
         objectMapper.readTree(responseBody)
-            .path("choices")
+            .path("candidates")
             .path(0)
-            .path("message")
             .path("content")
+            .path("parts")
+            .path(0)
+            .path("text")
             .asText()
     }.getOrDefault(responseBody)
         .replace(Regex("\\s+"), " ")
         .take(RESPONSE_PREVIEW_MAX_LENGTH)
         .ifBlank { "<пусто>" }
 
-    /** Возвращает причину завершения ответа OpenRouter для диагностики обрезанных ответов. */
+    /** Возвращает причину завершения ответа Gemini для диагностики обрезанных ответов. */
     private fun responseFinishReason(responseBody: String): String? = runCatching {
         objectMapper.readTree(responseBody)
-            .path("choices")
+            .path("candidates")
             .path(0)
             .path("finish_reason")
             .asText()
@@ -240,7 +252,7 @@ class AiTradeSignalFilter(
             rateLimitedUntil = null
             return false
         }
-        aiFilterLogger.debug { "AI-фильтр временно не вызывает OpenRouter до $blockedUntil после HTTP 429" }
+        aiFilterLogger.debug { "AI-фильтр временно не вызывает Gemini до $blockedUntil после HTTP 429" }
         true
     }
 
@@ -258,7 +270,7 @@ class AiTradeSignalFilter(
             delaySeconds to until
         }
         aiFilterLogger.warn {
-            "AI-фильтр получил HTTP 429; пауза $waitSeconds с, запросы к OpenRouter приостановлены до $blockedUntil"
+            "AI-фильтр получил HTTP 429 от Gemini; пауза $waitSeconds с, запросы к Gemini приостановлены до $blockedUntil"
         }
     }
 
@@ -295,6 +307,7 @@ class AiTradeSignalFilter(
         const val NANOS_IN_MILLISECOND = 1_000_000L
         const val HTTP_TOO_MANY_REQUESTS = 429
         const val RESPONSE_PREVIEW_MAX_LENGTH = 400
+        const val GEMINI_API_KEY_HEADER = "x-goog-api-key"
         val RATE_LIMIT_BACKOFF_SECONDS = listOf(10L, 20L, 40L, 80L, 160L, 300L)
 
         const val SYSTEM_PROMPT = """
@@ -322,21 +335,40 @@ class AiTradeSignalFilter(
             Используй ровно этот формат: {"action":"APPROVE","confidence":0.85,"reason":"Краткое объяснение на русском"}.
         """
 
-        val JSON_OBJECT_RESPONSE_FORMAT = mapOf("type" to "json_object")
-
-        /** Отключает reasoning, чтобы ответ целиком был кратким JSON-решением. */
-        val REASONING_DISABLED = mapOf(
-            "effort" to "none",
-            "exclude" to true
+        /** JSON Schema принуждает Gemini вернуть именно пригодное для разбора решение. */
+        val AI_DECISION_JSON_SCHEMA = mapOf(
+            "type" to "object",
+            "properties" to mapOf(
+                "action" to mapOf(
+                    "type" to "string",
+                    "enum" to listOf("APPROVE", "REJECT", "HOLD")
+                ),
+                "confidence" to mapOf(
+                    "type" to "number",
+                    "minimum" to 0,
+                    "maximum" to 1
+                ),
+                "reason" to mapOf(
+                    "type" to "string",
+                    "description" to "Одна краткая фраза на русском языке длиной до 180 символов"
+                )
+            ),
+            "required" to listOf("action", "confidence", "reason"),
+            "additionalProperties" to false
         )
     }
 }
 
-private class AiRateLimitException : RuntimeException("OpenRouter вернул HTTP 429")
+private class AiRateLimitException : RuntimeException("Gemini вернул HTTP 429")
 
-private data class OpenRouterResponse(
+private data class GeminiResponse(
     val statusCode: Int,
     val body: String
+)
+
+/** Содержит безопасно усечённый ответ Gemini при кодах HTTP, отличных от 429. */
+private class AiProviderException(statusCode: Int, responseBody: String) : RuntimeException(
+    "Gemini вернул HTTP $statusCode: ${responseBody.replace(Regex("\\s+"), " ").take(400)}"
 )
 
 private class AiResponseFormatException(
