@@ -85,6 +85,7 @@ class AiTradeSignalFilter(
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
                     "HTTP=${error.statusCode}, модель=$model, " +
+                    "finish_reason=${error.finishReason ?: "<не указан>"}, " +
                     "ответ AI (усечён): ${error.contentPreview}"
             }
             AiFilterResult(approved = false)
@@ -128,6 +129,7 @@ class AiTradeSignalFilter(
             throw AiResponseFormatException(
                 statusCode = response.statusCode,
                 contentPreview = responseContentPreview(response.body),
+                finishReason = responseFinishReason(response.body),
                 cause = error
             )
         }
@@ -195,6 +197,16 @@ class AiTradeSignalFilter(
         .replace(Regex("\\s+"), " ")
         .take(RESPONSE_PREVIEW_MAX_LENGTH)
         .ifBlank { "<пусто>" }
+
+    /** Возвращает причину завершения ответа OpenRouter для диагностики обрезанных ответов. */
+    private fun responseFinishReason(responseBody: String): String? = runCatching {
+        objectMapper.readTree(responseBody)
+            .path("choices")
+            .path(0)
+            .path("finish_reason")
+            .asText()
+            .takeIf(String::isNotBlank)
+    }.getOrNull()
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
         aiFilterLogger.info {
@@ -304,7 +316,7 @@ class AiTradeSignalFilter(
             Стоп-лосс, тейк-профит, ручное и аварийное закрытие к тебе не поступают и не должны обсуждаться.
 
             REJECT означает не исполнять сделку. HOLD означает недостаточность данных.
-            Поле reason пиши на русском языке.
+            Поле reason пиши на русском языке одной фразой не длиннее 180 символов.
             Всегда возвращай только один валидный JSON-объект без Markdown, пояснений и текста до или после JSON.
             Ответ обязан начинаться с { и заканчиваться }.
             Используй ровно этот формат: {"action":"APPROVE","confidence":0.85,"reason":"Краткое объяснение на русском"}.
@@ -330,5 +342,6 @@ private data class OpenRouterResponse(
 private class AiResponseFormatException(
     val statusCode: Int,
     val contentPreview: String,
+    val finishReason: String?,
     cause: Throwable
 ) : RuntimeException(cause.message, cause)
