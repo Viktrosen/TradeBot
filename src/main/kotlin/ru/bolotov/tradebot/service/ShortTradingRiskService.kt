@@ -20,7 +20,7 @@ class ShortTradingRiskService(
     private val instrumentsService: InstrumentsServiceSync,
     private val usersService: UsersServiceSync,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean,
-    @Value("\${trading.short.min-margin-sufficiency}")
+    @Value("\${trading.short.min-margin-sufficiency:0.3}")
     private val minimumMarginSufficiency: Double
 ) {
     /** Возвращает разрешение либо причину безопасного отказа в открытии короткой позиции. */
@@ -47,44 +47,30 @@ class ShortTradingRiskService(
             )
             val instrumentName = instrument.ticker.ifBlank { instrumentId }
 
-            when {
-                margin.missingFunds > BigDecimal.ZERO -> {
-                    ShortRiskCheck.Rejected(
-                        "Недостаточно средств для маржинальной позиции: ${margin.missingFunds} RUB; " +
-                            margin.describe()
-                    )
+            // Комплексная проверка через метод MarginSnapshot
+            if (!margin.canOpenNewPosition(minimumMarginSufficiency.toBigDecimal())) {
+                val reason = when {
+                    !margin.hasCurrentMarginLoad() -> "невозможно определить маржинальную нагрузку"
+                    margin.missingFunds > BigDecimal.ZERO -> "недостаточно средств: ${margin.missingFunds} RUB"
+                    else -> "недостаточный запас маржи: ${margin.fundsSufficiencyLevel}, требуется >= $minimumMarginSufficiency"
                 }
-
-                margin.hasCurrentMarginLoad() &&
-                    margin.fundsSufficiencyLevel < minimumMarginSufficiency.toBigDecimal() -> {
-                    ShortRiskCheck.Rejected(
-                        "Недостаточный запас маржи: ${margin.fundsSufficiencyLevel}, " +
-                            "требуется не ниже $minimumMarginSufficiency; ${margin.describe()}"
-                    )
+                shortRiskLogger.warn {
+                    "Шорт $instrumentName отклонён: $reason. ${margin.describe()}"
                 }
-
-                else -> {
-                    if (!margin.hasCurrentMarginLoad()) {
-                        shortRiskLogger.info {
-                            "Шорт $instrumentName: текущая маржинальная нагрузка отсутствует; " +
-                                "порог fundsSufficiencyLevel не применяется. ${margin.describe()}; " +
-                                "допустимый объём проверяется через sell_margin_limits брокера"
-                        }
-                    }
-                    ShortRiskCheck.Allowed(margin)
-                }
+                return ShortRiskCheck.Rejected(
+                    "Маржинальные показатели не позволяют открыть шорт: $reason. ${margin.describe()}"
+                )
             }
+
+            shortRiskLogger.info {
+                "Шорт $instrumentName разрешён: маржинальные показатели в норме. ${margin.describe()}"
+            }
+            return ShortRiskCheck.Allowed(margin)
+
         }.onFailure { error ->
             shortRiskLogger.error(error) { "Не удалось проверить маржинальные риски для $instrumentId" }
         }.getOrElse { error ->
             ShortRiskCheck.Rejected("Маржинальные показатели недоступны: ${error.message}")
         }
     }
-
-    /** Формирует компактную диагностическую сводку без реквизитов счёта. */
-    private fun MarginSnapshot.describe(): String =
-        "ликвидный портфель=$liquidPortfolio, начальная маржа=$startingMargin, " +
-            "минимальная маржа=$minimalMargin, уровень достаточности=$fundsSufficiencyLevel, " +
-            "недостающие средства=$missingFunds"
-
 }
