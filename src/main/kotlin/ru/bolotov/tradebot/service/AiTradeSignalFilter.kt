@@ -30,7 +30,7 @@ class AiTradeSignalFilter(
     private val objectMapper: ObjectMapper,
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
     @Value("\${ai.gemini.api-key:}") private val apiKey: String,
-    @Value("\${ai.gemini.model:gemini-2.5-flash-lite}") private val model: String,
+    @Value("\${ai.gemini.model:gemini-2.0-flash}") private val model: String,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
     @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
@@ -168,9 +168,7 @@ class AiTradeSignalFilter(
         "generationConfig" to mapOf(
             "temperature" to 0,
             "maxOutputTokens" to MAX_COMPLETION_TOKENS,
-            "responseMimeType" to "application/json",
-            "responseJsonSchema" to AI_DECISION_JSON_SCHEMA,
-            "thinkingConfig" to mapOf("thinkingBudget" to 0)
+            "responseMimeType" to "application/json"
         )
     )
 
@@ -343,28 +341,6 @@ class AiTradeSignalFilter(
             Ответ обязан начинаться с { и заканчиваться }.
             Используй ровно этот формат: {"action":"APPROVE","confidence":0.85,"reason":"Краткое объяснение на русском"}.
         """
-
-        /** JSON Schema принуждает Gemini вернуть именно пригодное для разбора решение. */
-        val AI_DECISION_JSON_SCHEMA = mapOf(
-            "type" to "object",
-            "properties" to mapOf(
-                "action" to mapOf(
-                    "type" to "string",
-                    "enum" to listOf("APPROVE", "REJECT", "HOLD")
-                ),
-                "confidence" to mapOf(
-                    "type" to "number",
-                    "minimum" to 0,
-                    "maximum" to 1
-                ),
-                "reason" to mapOf(
-                    "type" to "string",
-                    "description" to "Одна краткая фраза на русском языке длиной до 180 символов"
-                )
-            ),
-            "required" to listOf("action", "confidence", "reason"),
-            "additionalProperties" to false
-        )
     }
 }
 
