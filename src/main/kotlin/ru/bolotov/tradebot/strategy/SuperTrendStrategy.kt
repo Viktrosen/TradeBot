@@ -37,13 +37,14 @@ class SuperTrendStrategy(
         // Middle band = currentPrice + 0.5 * ATR
         val middle = data.currentPrice + (atr.multiply(BigDecimal("0.5")))
 
-        var upperBand = middle + (multiplier * atr.toDouble())
-        var lowerBand = middle - (multiplier * atr.toDouble())
+        val multiplierBD = BigDecimal.valueOf(multiplier)
+        var upperBand = middle + (atr.multiply(multiplierBD))
+        var lowerBand = middle - (atr.multiply(multiplierBD))
 
         // Adjust bands based on previous values
         when (previousDirection) {
             TrendDirection.UPTREND -> {
-                if (lowerBand < previousLowerBand.doubleValue()) {
+                if (lowerBand < previousLowerBand) {
                     lowerBand = previousLowerBand
                 }
                 if (data.currentPrice > previousUpperBand) {
@@ -52,7 +53,7 @@ class SuperTrendStrategy(
                 }
             }
             TrendDirection.DOWNTREND -> {
-                if (upperBand > previousUpperBand.doubleValue()) {
+                if (upperBand > previousUpperBand) {
                     upperBand = previousUpperBand
                 }
                 if (data.currentPrice < previousLowerBand) {

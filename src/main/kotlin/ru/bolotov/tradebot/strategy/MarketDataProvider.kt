@@ -446,17 +446,18 @@ class MarketDataProvider(
         var sumPlusDM = directionalMovements.take(period).sumOf { it.plusDM }
         var sumMinusDM = directionalMovements.take(period).sumOf { it.minusDM }
         var sumTR = trueRanges.take(period).reduce { acc, tr -> acc + tr }
+        val periodBD = BigDecimal.valueOf(period.toLong())
 
         for (i in period until directionalMovements.size) {
-            sumPlusDM = sumPlusDM.subtract(sumPlusDM / period).add(directionalMovements[i].plusDM)
-            sumMinusDM = sumMinusDM.subtract(sumMinusDM / period).add(directionalMovements[i].minusDM)
-            sumTR = sumTR.subtract(sumTR / period).add(trueRanges[i])
+            sumPlusDM = sumPlusDM.subtract(sumPlusDM.divide(periodBD, 8, RoundingMode.HALF_UP)).add(directionalMovements[i].plusDM)
+            sumMinusDM = sumMinusDM.subtract(sumMinusDM.divide(periodBD, 8, RoundingMode.HALF_UP)).add(directionalMovements[i].minusDM)
+            sumTR = sumTR.subtract(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP)).add(trueRanges[i])
         }
 
         if (sumTR.compareTo(BigDecimal.ZERO) == 0) return 0.0
 
-        val plusDI = (sumPlusDM / period).divide(sumTR / period, 8, RoundingMode.HALF_UP) * 100
-        val minusDI = (sumMinusDM / period).divide(sumTR / period, 8, RoundingMode.HALF_UP) * 100
+        val plusDI = sumPlusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP) * 100
+        val minusDI = sumMinusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP) * 100
 
         val diSum = plusDI.add(minusDI)
         return if (diSum > BigDecimal.ZERO) {
