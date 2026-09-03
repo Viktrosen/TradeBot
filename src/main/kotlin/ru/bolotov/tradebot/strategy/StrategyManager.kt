@@ -13,7 +13,9 @@ class StrategyManager(
     private val bbStrategy: BollingerBandsStrategy,
     private val votingStrategy: VotingStrategy,
     private val confirmationStrategy: ConfirmationStrategy,
-    private val candlestickPatternStrategy: CandlestickPatternStrategy
+    private val candlestickPatternStrategy: CandlestickPatternStrategy,
+    private val superTrendStrategy: SuperTrendStrategy,  // НОВОЕ
+    private val vwapStrategy: VwapStrategy  // НОВОЕ
 ) {
     private var currentStrategy: TradingStrategy = crossEmaStrategy
 
@@ -33,7 +35,9 @@ class StrategyManager(
         "bb" to bbStrategy,
         "voting" to votingStrategy,
         "confirmation" to confirmationStrategy,
-        "candlestick" to candlestickPatternStrategy
+        "candlestick" to candlestickPatternStrategy,
+        "supertrend" to superTrendStrategy,  // НОВОЕ
+        "vwap" to vwapStrategy  // НОВОЕ
     )
 
     fun getCurrentStrategy(): TradingStrategy = currentStrategy
@@ -58,6 +62,8 @@ class StrategyManager(
         votingStrategy -> "voting"
         confirmationStrategy -> "confirmation"
         candlestickPatternStrategy -> "candlestick"
+        superTrendStrategy -> "supertrend"  // НОВОЕ
+        vwapStrategy -> "vwap"  // НОВОЕ
         else -> "ema"
     }
 
@@ -117,6 +123,16 @@ class StrategyManager(
                 "name" to candlestickPatternStrategy.name,
                 "description" to candlestickPatternStrategy.description,
                 "type" to "candlestick"
+            ),
+            mapOf(  // НОВОЕ
+                "name" to superTrendStrategy.name,
+                "description" to superTrendStrategy.description,
+                "type" to "simple"
+            ),
+            mapOf(  // НОВОЕ
+                "name" to vwapStrategy.name,
+                "description" to vwapStrategy.description,
+                "type" to "simple"
             )
         )
     }

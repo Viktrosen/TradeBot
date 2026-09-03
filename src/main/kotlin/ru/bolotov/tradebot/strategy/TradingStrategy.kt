@@ -39,13 +39,17 @@ data class MarketData(
     val rsi: Double?,
     val macd: MacdData?,
     val bollingerBands: BollingerBandsData?,
-    val atr: BigDecimal?,  // 🆕 Average True Range
+    val atr: BigDecimal?,  // Average True Range
     val volume: Long,
     val avgVolume: Long,
     val spread: BigDecimal,
     val volatility: Double,
     val strategyCandleKey: String? = null,
-    val candlestickPattern: ru.bolotov.tradebot.strategy.data.PatternResult? = null
+    val candlestickPattern: ru.bolotov.tradebot.strategy.data.PatternResult? = null,
+    // НОВОЕ: для Choppiness Index и ADX
+    val high14: BigDecimal? = null,   // max price за 14 свечей
+    val low14: BigDecimal? = null,    // min price за 14 свечей
+    val adx: Double? = null           // Average Directional Index
 )
 
 data class MacdData(

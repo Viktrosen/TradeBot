@@ -10,15 +10,24 @@ class VotingStrategy(
     private val crossEmaStrategy: CrossEmaStrategy,
     private val rsiStrategy: RsiStrategy,
     private val macdStrategy: MacdStrategy,
-    private val bbStrategy: BollingerBandsStrategy
+    private val bbStrategy: BollingerBandsStrategy,
+    private val superTrendStrategy: SuperTrendStrategy,  // НОВОЕ
+    private val vwapStrategy: VwapStrategy  // НОВОЕ
 ) : ConfigurableStrategy {
 
     override var name = "Voting"
     override var description = "Голосование с весами"
 
-    private var weights: Map<String, Int> = mapOf("EMA" to 3, "RSI" to 2, "MACD" to 2, "BB" to 2)
+    private var weights: Map<String, Int> = mapOf(
+        "EMA" to 3, 
+        "RSI" to 2, 
+        "MACD" to 2, 
+        "BB" to 2,
+        "SUPER_TREND" to 3,  // НОВОЕ
+        "VWAP" to 2  // НОВОЕ
+    )
 
-    private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB")
+    private val supportedIndicators = setOf("EMA", "RSI", "MACD", "BB", "SUPER_TREND", "VWAP")
 
     fun getWeights(): Map<String, Int> = weights.toMap()
 
@@ -96,6 +105,28 @@ class VotingStrategy(
             explanations.add("BB: ${bbSignal.direction}")
         }
 
+        // НОВОЕ: SuperTrend
+        val superTrendSignal = superTrendStrategy.analyze(data)
+        when (superTrendSignal.direction) {
+            OrderDirection.BUY -> buyScore += weights["SUPER_TREND"] ?: 0
+            OrderDirection.SELL -> sellScore += weights["SUPER_TREND"] ?: 0
+            else -> {}
+        }
+        if (superTrendSignal.direction != OrderDirection.HOLD) {
+            explanations.add("SUPER_TREND: ${superTrendSignal.direction}")
+        }
+
+        // НОВОЕ: VWAP
+        val vwapSignal = vwapStrategy.analyze(data)
+        when (vwapSignal.direction) {
+            OrderDirection.BUY -> buyScore += weights["VWAP"] ?: 0
+            OrderDirection.SELL -> sellScore += weights["VWAP"] ?: 0
+            else -> {}
+        }
+        if (vwapSignal.direction != OrderDirection.HOLD) {
+            explanations.add("VWAP: ${vwapSignal.direction}")
+        }
+
         return when {
             buyScore > sellScore -> Signal(
                 direction = OrderDirection.BUY,
@@ -118,6 +149,8 @@ class VotingStrategy(
             append("📊 RSI\n\n${rsiStrategy.getExplanation(data)}\n\n")
             append("📉 MACD\n\n${macdStrategy.getExplanation(data)}\n\n")
             append("📏 Bollinger Bands\n\n${bbStrategy.getExplanation(data)}\n\n")
+            append("📈 SuperTrend\n\n${superTrendStrategy.getExplanation(data)}\n\n")  // НОВОЕ
+            append("📊 VWAP\n\n${vwapStrategy.getExplanation(data)}\n\n")  // НОВОЕ
 
             val signal = analyze(data)
             append("🎯 Итоговое решение: ${signal.direction}")

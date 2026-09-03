@@ -28,7 +28,20 @@ class MarketRegimeService(
     @Value("\${market-regime.volatile-atr-percent:0.70}")
     private val volatileAtrPercent: Double,
     @Value("\${market-regime.flat-atr-percent:0.25}")
-    private val flatAtrPercent: Double
+    private val flatAtrPercent: Double,
+    // НОВЫЕ параметры
+    @Value("\${market-regime.chop-threshold:61.8}")
+    private val chopThreshold: Double,
+    @Value("\${market-regime.atr-extreme-percent:2.0}")
+    private val extremeAtrPercent: Double,
+    @Value("\${market-regime.atr-high-percent:1.0}")
+    private val highAtrPercent: Double,
+    @Value("\${market-regime.atr-normal-percent:0.5}")
+    private val normalAtrPercent: Double,
+    @Value("\${market-regime.atr-low-percent:0.25}")
+    private val lowAtrPercent: Double,
+    @Value("\${market-regime.adx-threshold:25.0}")
+    private val adxThreshold: Double
 ) {
     private val states = ConcurrentHashMap<String, RegimeState>()
 
@@ -40,6 +53,11 @@ class MarketRegimeService(
         require(flatAtrPercent <= volatileAtrPercent) {
             "Порог боковика по ATR не может быть выше порога высокой волатильности"
         }
+        require(chopThreshold in 0.0..100.0) { "Choppiness threshold должен быть от 0 до 100" }
+        require(extremeAtrPercent > highAtrPercent) { "EXTREME ATR должен быть выше HIGH ATR" }
+        require(highAtrPercent > normalAtrPercent) { "HIGH ATR должен быть выше NORMAL ATR" }
+        require(normalAtrPercent > lowAtrPercent) { "NORMAL ATR должен быть выше LOW ATR" }
+        require(adxThreshold in 0.0..100.0) { "ADX threshold должен быть от 0 до 100" }
     }
 
     /**
@@ -91,8 +109,30 @@ class MarketRegimeService(
             return MarketRegime.UNCERTAIN
         }
 
-        val emaSpreadPercent = relativeDifferencePercent(ema50, ema200)
+        // НОВОЕ: 1. Проверка экстремальной волатильности (приоритет №1)
         val atrPercent = percentageOf(atr, marketData.currentPrice)
+        if (atrPercent >= extremeAtrPercent) {
+            return MarketRegime.EXTREME_VOLATILE
+        }
+
+        // НОВОЕ: 2. Проверка choppiness (хаотичность)
+        val choppiness = calculateChoppinessIndex(marketData)
+        if (choppiness > chopThreshold) {
+            return if (atrPercent >= normalAtrPercent) {
+                MarketRegime.FLAT_HIGH_VOL
+            } else {
+                MarketRegime.FLAT_LOW_VOL
+            }
+        }
+
+        // НОВОЕ: 3. Проверка силы тренда (ADX)
+        val adx = marketData.adx ?: 0.0
+        if (adx < adxThreshold) {
+            return MarketRegime.WEAK_TREND
+        }
+
+        // 4. Определяем направление (EMA) — существующая логика
+        val emaSpreadPercent = relativeDifferencePercent(ema50, ema200)
         if (atrPercent >= volatileAtrPercent) return MarketRegime.VOLATILE
 
         return when {
@@ -109,6 +149,24 @@ class MarketRegimeService(
         }
     }
 
+    // НОВОЕ: Choppiness Index — прямое измерение хаотичности рынка
+    private fun calculateChoppinessIndex(marketData: MarketData): Double {
+        val atrSum = sumRecentATR(marketData.atr, 14)
+        val high14 = marketData.high14 ?: marketData.currentPrice
+        val low14 = marketData.low14 ?: marketData.currentPrice
+        val priceRange = high14 - low14
+
+        return if (priceRange > BigDecimal.ZERO && atrSum > 0) {
+            -Math.log10(atrSum / priceRange.toDouble()) / Math.log10(14.0)
+        } else 50.0
+    }
+
+    private fun sumRecentATR(atr: BigDecimal?, period: Int): Double {
+        // Упрощённый расчёт: используем текущий ATR как proxy для SUM(ATR, period)
+        // Точный расчёт требует истории True Range
+        return atr?.toDouble() ?: 0.0 * period
+    }
+
     private fun confirmRegime(
         currentRegime: MarketRegime,
         candidate: MarketRegime,
@@ -123,8 +181,13 @@ class MarketRegimeService(
         val ema50 = marketData.ema50 ?: return "недостаточно EMA(50)"
         val ema200 = marketData.ema200 ?: return "недостаточно EMA(200)"
         val atr = marketData.atr ?: return "недостаточно ATR"
+
+        val atrPercent = percentageOf(atr, marketData.currentPrice)
+        val choppiness = calculateChoppinessIndex(marketData)
+        val adx = marketData.adx ?: 0.0
+
         return "кандидат=$candidate, EMA50/EMA200=${format(relativeDifferencePercent(ema50, ema200))}%, " +
-            "ATR=${format(percentageOf(atr, marketData.currentPrice))}%"
+            "ATR=${format(atrPercent)}%, CHOP=${format(choppiness)}, ADX=${format(adx)}"
     }
 
     private fun relativeDifferencePercent(value: BigDecimal, base: BigDecimal): Double =

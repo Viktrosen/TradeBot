@@ -45,10 +45,18 @@ class MarketRegimeStrategySelector(
 
     private companion object {
         val STRATEGY_BY_REGIME = mapOf(
+            // Существующие
             MarketRegime.STRONG_UPTREND to "ema",
             MarketRegime.STRONG_DOWNTREND to "ema",
             MarketRegime.FLAT to "candlestick",
-            MarketRegime.VOLATILE to "voting"
+            MarketRegime.VOLATILE to "voting",
+            MarketRegime.UNCERTAIN to null,
+
+            // НОВЫЕ
+            MarketRegime.WEAK_TREND to "supertrend",
+            MarketRegime.FLAT_LOW_VOL to "candlestick",
+            MarketRegime.FLAT_HIGH_VOL to "vwap",
+            MarketRegime.EXTREME_VOLATILE to null  // Нет входов — защита
         )
     }
 }

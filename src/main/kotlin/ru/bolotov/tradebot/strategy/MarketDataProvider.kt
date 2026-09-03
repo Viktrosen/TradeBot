@@ -90,7 +90,11 @@ class MarketDataProvider(
                 avgVolume = indicators.avgVolume,
                 spread = BigDecimal.valueOf(0.1),
                 volatility = indicators.volatility,
-                strategyCandleKey = indicators.strategyCandleKey
+                strategyCandleKey = indicators.strategyCandleKey,
+                // НОВОЕ: для Choppiness Index и ADX
+                high14 = indicators.high14,
+                low14 = indicators.low14,
+                adx = indicators.adx
             )
         } catch (e: Exception) {
             logMarketDataFailure(instrumentUid, e)
@@ -187,6 +191,13 @@ class MarketDataProvider(
         val ema50Series = calculateEMASeries(closes, 50)
         val ema200Series = calculateEMASeries(closes, 200)
 
+        // НОВОЕ: high14, low14 для Choppiness Index
+        val high14 = candles.takeLast(14).maxOfOrNull { it.close.toBigDecimal() }
+        val low14 = candles.takeLast(14).minOfOrNull { it.close.toBigDecimal() }
+
+        // НОВОЕ: ADX для определения силы тренда
+        val adx = calculateADX(candles, 14)
+
         return CandleIndicators(
             closes = closes,
             ema5 = ema5Series?.lastOrNull(),
@@ -201,7 +212,11 @@ class MarketDataProvider(
             currentVolume = candles.lastOrNull()?.volume ?: 0L,
             avgVolume = if (volumes.isNotEmpty()) volumes.average().toLong() else 0L,
             volatility = calculateVolatility(closes),
-            strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey)
+            strategyCandleKey = candles.lastOrNull()?.let(::strategyCandleKey),
+            // НОВОЕ
+            high14 = high14,
+            low14 = low14,
+            adx = adx
         )
     }
 
@@ -389,6 +404,71 @@ class MarketDataProvider(
         return stdDev * Math.sqrt(252.0) * 100
     }
 
+    // НОВОЕ: расчёт ADX (Average Directional Index)
+    private fun calculateADX(candles: List<HistoricCandle>, period: Int = 14): Double? {
+        if (candles.size < period * 2 + 1) return null
+
+        // Рассчитываем +DM, -DM, TR
+        val directionalMovements = mutableListOf<DirectionalMovement>()
+        val trueRanges = mutableListOf<BigDecimal>()
+
+        for (i in 1 until candles.size) {
+            val high = candles[i].high.toBigDecimal()
+            val low = candles[i].low.toBigDecimal()
+            val prevHigh = candles[i - 1].high.toBigDecimal()
+            val prevLow = candles[i - 1].low.toBigDecimal()
+            val prevClose = candles[i - 1].close.toBigDecimal()
+
+            val plusDM = if (high - prevHigh > prevLow - low) {
+                high - prevHigh
+            } else {
+                BigDecimal.ZERO
+            }
+
+            val minusDM = if (prevLow - low > high - prevHigh) {
+                prevLow - low
+            } else {
+                BigDecimal.ZERO
+            }
+
+            val tr1 = high - low
+            val tr2 = (high - prevClose).let { if (it < BigDecimal.ZERO) -it else it }
+            val tr3 = (low - prevClose).let { if (it < BigDecimal.ZERO) -it else it }
+            val trueRange = listOf(tr1, tr2, tr3).maxOrNull() ?: BigDecimal.ZERO
+
+            directionalMovements.add(DirectionalMovement(plusDM, minusDM))
+            trueRanges.add(trueRange)
+        }
+
+        if (directionalMovements.size < period || trueRanges.size < period) return null
+
+        // Wilder's smoothing для +DM, -DM, TR
+        var sumPlusDM = directionalMovements.take(period).sumOf { it.plusDM }
+        var sumMinusDM = directionalMovements.take(period).sumOf { it.minusDM }
+        var sumTR = trueRanges.take(period).reduce { acc, tr -> acc + tr }
+
+        for (i in period until directionalMovements.size) {
+            sumPlusDM = sumPlusDM.subtract(sumPlusDM / period).add(directionalMovements[i].plusDM)
+            sumMinusDM = sumMinusDM.subtract(sumMinusDM / period).add(directionalMovements[i].minusDM)
+            sumTR = sumTR.subtract(sumTR / period).add(trueRanges[i])
+        }
+
+        if (sumTR.compareTo(BigDecimal.ZERO) == 0) return 0.0
+
+        val plusDI = (sumPlusDM / period).divide(sumTR / period, 8, RoundingMode.HALF_UP) * 100
+        val minusDI = (sumMinusDM / period).divide(sumTR / period, 8, RoundingMode.HALF_UP) * 100
+
+        val diSum = plusDI.add(minusDI)
+        return if (diSum > BigDecimal.ZERO) {
+            Math.abs(plusDI.toDouble() - minusDI.toDouble()) / diSum.toDouble() * 100
+        } else 0.0
+    }
+
+    private data class DirectionalMovement(
+        val plusDM: BigDecimal,
+        val minusDM: BigDecimal
+    )
+
     private fun isClosed(candle: HistoricCandle, now: Instant, intervalSeconds: Long): Boolean {
         return candle.isComplete && !candleStart(candle).plusSeconds(intervalSeconds).isAfter(now)
     }
@@ -449,6 +529,10 @@ class MarketDataProvider(
         val currentVolume: Long,
         val avgVolume: Long,
         val volatility: Double,
-        val strategyCandleKey: String?
+        val strategyCandleKey: String?,
+        // НОВОЕ: для Choppiness Index и ADX
+        val high14: BigDecimal? = null,
+        val low14: BigDecimal? = null,
+        val adx: Double? = null
     )
 }

@@ -9,5 +9,7 @@ data class PatternResult(
     val direction: OrderDirection,
     val confidence: Double,
     val description: String,
-    val candleKey: String? = null
+    val candleKey: String? = null,
+    val volumeRatio: Double? = null,  // НОВОЕ: ratio объёма к SMA(20)
+    val volumeConfirmed: Boolean = false  // НОВОЕ: подтверждение объёмом
 )

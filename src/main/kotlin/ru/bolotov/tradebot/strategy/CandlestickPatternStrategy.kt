@@ -359,12 +359,25 @@ class CandlestickPatternStrategy(
         val expectedTrend = expectedTrend(pattern.pattern, pattern.direction)
         val trendMatch = filters.globalTrend == expectedTrend
         val rsiExtreme = isRsiExtreme(filters.rsi, pattern.direction)
+
+        // УСИЛЕННЫЙ volume-weighting: пропорциональный бонус вместо фиксированного
+        val volumeBoost = if (filters.volumeSpike) {
+            // Пропорциональный бонус: volumeRatio * VOLUME_BOOST_MULTIPLIER (макс. MAX_VOLUME_BOOST)
+            val boost = filters.volumeRatio * VOLUME_BOOST_MULTIPLIER
+            boost.coerceAtMost(MAX_VOLUME_BOOST)
+        } else {
+            LOW_VOLUME_PENALTY
+        }
+
         val confidence = pattern.confidence +
             (if (trendMatch) TREND_MATCH_BONUS else TREND_MISMATCH_PENALTY) +
             (if (rsiExtreme) RSI_EXTREME_BONUS else NO_RSI_ADJUSTMENT) +
-            (if (filters.volumeSpike) VOLUME_SPIKE_BONUS else LOW_VOLUME_PENALTY)
+            volumeBoost
 
-        return pattern.copy(confidence = confidence.coerceIn(0.0, 1.0))
+        return pattern.copy(
+            confidence = confidence.coerceIn(0.0, 1.0),
+            volumeRatio = filters.volumeRatio
+        )
     }
 
     private fun calculateFilters(candles: List<HistoricCandle>): CandlestickMarketFilters {
@@ -378,11 +391,29 @@ class CandlestickPatternStrategy(
             else -> OrderDirection.HOLD
         }
 
+        val volumeRatio = calculateVolumeRatio(candles)
+
         return CandlestickMarketFilters(
             globalTrend = globalTrend,
             rsi = calculateRsi(closes, RSI_PERIOD),
-            volumeSpike = hasVolumeSpike(candles)
+            volumeSpike = hasVolumeSpike(candles),
+            volumeRatio = volumeRatio
         )
+    }
+
+    private fun calculateVolumeRatio(candles: List<HistoricCandle>): Double {
+        if (candles.size < VOLUME_SMA_PERIOD + 1) return 1.0
+
+        val currentVolume = candles.last().volume.toDouble()
+        if (currentVolume <= 0.0) return 1.0
+
+        val averageVolume = candles.dropLast(1).takeLast(VOLUME_SMA_PERIOD)
+            .map(HistoricCandle::getVolume)
+            .filter { it > 0L }
+            .takeIf { it.size == VOLUME_SMA_PERIOD }
+            ?.average() ?: return 1.0
+
+        return if (averageVolume > 0) currentVolume / averageVolume else 1.0
     }
 
     private fun calculateEma(prices: List<BigDecimal>, period: Int): BigDecimal? {
@@ -622,5 +653,9 @@ class CandlestickPatternStrategy(
         const val NO_RSI_ADJUSTMENT = 0.0
         const val VOLUME_SPIKE_BONUS = 0.10
         const val LOW_VOLUME_PENALTY = -0.10
+
+        // НОВОЕ: усиленный volume-weighting
+        const val VOLUME_BOOST_MULTIPLIER = 0.15
+        const val MAX_VOLUME_BOOST = 2.0
     }
 }

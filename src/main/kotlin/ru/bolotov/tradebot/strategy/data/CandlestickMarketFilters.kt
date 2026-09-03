@@ -7,5 +7,6 @@ import java.math.BigDecimal
 data class CandlestickMarketFilters(
     val globalTrend: OrderDirection,
     val rsi: BigDecimal?,
-    val volumeSpike: Boolean
+    val volumeSpike: Boolean,
+    val volumeRatio: Double = 1.0  // НОВОЕ: ratio текущего объёма к SMA(20)
 )
