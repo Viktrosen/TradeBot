@@ -456,8 +456,9 @@ class MarketDataProvider(
 
         if (sumTR.compareTo(BigDecimal.ZERO) == 0) return 0.0
 
-        val plusDI = sumPlusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP) * 100
-        val minusDI = sumMinusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP) * 100
+        val hundredBD = BigDecimal.valueOf(100)
+        val plusDI = sumPlusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP).multiply(hundredBD)
+        val minusDI = sumMinusDM.divide(periodBD, 8, RoundingMode.HALF_UP).divide(sumTR.divide(periodBD, 8, RoundingMode.HALF_UP), 8, RoundingMode.HALF_UP).multiply(hundredBD)
 
         val diSum = plusDI.add(minusDI)
         return if (diSum > BigDecimal.ZERO) {
