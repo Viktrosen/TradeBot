@@ -1,8 +1,11 @@
 package ru.bolotov.tradebot.strategy
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * VWAP — Volume Weighted Average Price с отклонениями.
@@ -15,7 +18,6 @@ import java.math.BigDecimal
  */
 @Component
 class VwapStrategy(
-    @Value("\${strategy.vwap.stdev-multiplier:2.0}") private val stdevMultiplier: Double,
     @Value("\${strategy.vwap.deviation-threshold:0.02}") private val deviationThreshold: Double
 ) : TradingStrategy {
 
@@ -35,18 +37,22 @@ class VwapStrategy(
         val deviation = (currentPrice.toDouble() - vwap.toDouble()) / vwap.toDouble()
 
         return when {
-            deviation < -deviationThreshold ->
+            deviation < -deviationThreshold -> {
+                logger.info { "🟢 VWAP: BUY сигнал для ${data.instrumentName} (отклонение ${"%.2f".format(deviation * 100)}%)" }
                 Signal(
                     OrderDirection.BUY,
                     0.70,
                     "VWAP: цена ниже средней (отклонение ${"%.2f".format(deviation * 100)}%)"
                 )
-            deviation > deviationThreshold ->
+            }
+            deviation > deviationThreshold -> {
+                logger.info { "🔴 VWAP: SELL сигнал для ${data.instrumentName} (отклонение ${"%.2f".format(deviation * 100)}%)" }
                 Signal(
                     OrderDirection.SELL,
                     0.70,
                     "VWAP: цена выше средней (отклонение ${"%.2f".format(deviation * 100)}%)"
                 )
+            }
             else -> Signal.HOLD
         }
     }
@@ -54,7 +60,7 @@ class VwapStrategy(
     override fun getExplanation(data: MarketData): String {
         val vwap = calculateVWAP(data.currentPrice, data.volume, data.avgVolume)
         val deviation = (data.currentPrice.toDouble() - vwap.toDouble()) / vwap.toDouble() * 100
-        return "VWAP deviation analysis; deviation=${"%.2f".format(deviation)}%; threshold=${deviationThreshold * 100}%; stdevMultiplier=$stdevMultiplier"
+        return "VWAP deviation analysis; deviation=${"%.2f".format(deviation)}%; threshold=${deviationThreshold * 100}%"
     }
 
     private fun calculateVWAP(currentPrice: BigDecimal, volume: Long, avgVolume: Long): BigDecimal {

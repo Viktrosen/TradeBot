@@ -1,8 +1,11 @@
 package ru.bolotov.tradebot.strategy
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * SuperTrend — трендовая стратегия на основе ATR-полос.
@@ -50,6 +53,7 @@ class SuperTrendStrategy(
                 if (data.currentPrice > previousUpperBand) {
                     previousDirection = TrendDirection.DOWNTREND
                     upperBand = lowerBand
+                    logger.info { "📈 SuperTrend: смена направления на DOWNTREND для ${data.instrumentName}" }
                 }
             }
             TrendDirection.DOWNTREND -> {
@@ -59,6 +63,7 @@ class SuperTrendStrategy(
                 if (data.currentPrice < previousLowerBand) {
                     previousDirection = TrendDirection.UPTREND
                     lowerBand = upperBand
+                    logger.info { "📉 SuperTrend: смена направления на UPTREND для ${data.instrumentName}" }
                 }
             }
         }
@@ -67,24 +72,27 @@ class SuperTrendStrategy(
         previousLowerBand = lowerBand
 
         return when {
-            previousDirection == TrendDirection.UPTREND && data.currentPrice > upperBand ->
+            previousDirection == TrendDirection.UPTREND && data.currentPrice > upperBand -> {
+                logger.info { "🟢 SuperTrend: BUY сигнал для ${data.instrumentName} (цена выше верхней полосы)" }
                 Signal(
                     OrderDirection.BUY,
                     0.75,
                     "SuperTrend: цена выше верхней полосы (UPTREND)"
                 )
-            previousDirection == TrendDirection.DOWNTREND && data.currentPrice < lowerBand ->
+            }
+            previousDirection == TrendDirection.DOWNTREND && data.currentPrice < lowerBand -> {
+                logger.info { "🔴 SuperTrend: SELL сигнал для ${data.instrumentName} (цена ниже нижней полосы)" }
                 Signal(
                     OrderDirection.SELL,
                     0.75,
                     "SuperTrend: цена ниже нижней полосы (DOWNTREND)"
                 )
+            }
             else -> Signal.HOLD
         }
     }
 
     override fun getExplanation(data: MarketData): String {
-        val atr = data.atr ?: return "SuperTrend: нет данных ATR"
         val direction = previousDirection.name
         return "SuperTrend ATR bands; направление: $direction; период: $atrPeriod; множитель: $multiplier"
     }
