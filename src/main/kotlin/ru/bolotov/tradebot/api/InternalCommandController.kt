@@ -156,7 +156,9 @@ class InternalCommandController(
             mapOf(
                 "strategies" to listOf(
                     mapOf("name" to "voting", "type" to "voting", "description" to "Взвешенное голосование EMA, RSI, MACD, BB"),
-                    mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)")
+                    mapOf("name" to "candlestick", "type" to "patterns", "description" to "Свечные паттерны (Engulfing, Hammer, Doji и др.)"),
+                    mapOf("name" to "SuperTrend", "type" to "simple", "description" to "Следование за трендом по ATR и динамическим полосам"),
+                    mapOf("name" to "VWAP", "type" to "simple", "description" to "Цена относительно средневзвешенной по объёму")
                 ),
                 "current" to currentStrategyResponse()
             )

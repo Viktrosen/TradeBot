@@ -40,10 +40,12 @@ flowchart LR
 `AiTradeSignalFilter` передаёт в прямой Gemini API выбранную стратегию и её объяснение,
 направление и уверенность сигнала, а также цену, EMA, RSI, MACD, Bollinger Bands,
 ATR, объём, волатильность, спред и контекст открытой позиции. Ответ запрашивается
-в формате JSON-объекта с полями `action`, `confidence` и `reason`; схема Gemini
-ограничивает `action` значениями `APPROVE`, `REJECT` и `HOLD`, а `reason` ограничен
-одной фразой до 180 символов. Для `gemini-2.5-flash-lite` в запросе задаётся
-`thinkingBudget: 0`: решение остаётся коротким и не расходует ответ на рассуждения.
+в формате JSON-объекта с полями `action`, `confidence` и `reason`. В запрос передаётся
+`responseJsonSchema`: `action` ограничен значениями `APPROVE`, `REJECT` и `HOLD`, а
+`confidence` — диапазоном от 0 до 1; бот дополнительно валидирует ответ. Для
+`gemini-2.5-flash-lite` по умолчанию задан `thinkingConfig.thinkingBudget: 0`, чтобы
+не расходовать ответ на рассуждения. При выборе другой модели бюджет настраивается
+переменной `GEMINI_THINKING_BUDGET`.
 
 Отключение reasoning и запрос JSON не являются заменой проверки на стороне бота:
 если Gemini вернул ошибку, таймаут, неполный или невалидный JSON, AI-фильтр
@@ -271,6 +273,7 @@ gRPC-код ошибки, номер попытки, число подписан
 | `AI_ENABLED` | включает AI-подтверждение (`false` по умолчанию) |
 | `GEMINI_API_KEY` | секретный ключ проекта Google AI Studio |
 | `GEMINI_MODEL` | модель Gemini; по умолчанию `gemini-2.5-flash-lite` |
+| `GEMINI_THINKING_BUDGET` | бюджет reasoning Gemini; по умолчанию `0` для `gemini-2.5-flash-lite` |
 | `GEMINI_TIMEOUT_MS` | таймаут запроса к модели |
 | встроенный AI backoff | после HTTP 429 Gemini запросы ждут последовательно 10, 20, 40, 80, 160 и 300 секунд; после успешного валидного ответа счётчик сбрасывается |
 | `AI_MIN_BUY_CONFIDENCE` | минимальная уверенность AI для подтверждения покупки; по умолчанию `0.75` |

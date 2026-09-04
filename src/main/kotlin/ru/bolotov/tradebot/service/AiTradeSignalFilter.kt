@@ -31,6 +31,7 @@ class AiTradeSignalFilter(
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
     @Value("\${ai.gemini.api-key:}") private val apiKey: String,
     @Value("\${ai.gemini.model:gemini-2.0-flash}") private val model: String,
+    @Value("\${ai.gemini.thinking-budget:0}") private val thinkingBudget: Int,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
     @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
@@ -168,7 +169,9 @@ class AiTradeSignalFilter(
         "generationConfig" to mapOf(
             "temperature" to 0,
             "maxOutputTokens" to MAX_COMPLETION_TOKENS,
-            "responseMimeType" to "application/json"
+            "responseMimeType" to "application/json",
+            "responseJsonSchema" to DECISION_JSON_SCHEMA,
+            "thinkingConfig" to mapOf("thinkingBudget" to thinkingBudget)
         )
     )
 
@@ -316,6 +319,23 @@ class AiTradeSignalFilter(
         const val RESPONSE_PREVIEW_MAX_LENGTH = 400
         const val GEMINI_API_KEY_HEADER = "x-goog-api-key"
         val RATE_LIMIT_BACKOFF_SECONDS = listOf(10L, 20L, 40L, 80L, 160L, 300L)
+        val DECISION_JSON_SCHEMA = mapOf(
+            "type" to "object",
+            "properties" to mapOf(
+                "action" to mapOf(
+                    "type" to "string",
+                    "enum" to listOf("APPROVE", "REJECT", "HOLD")
+                ),
+                "confidence" to mapOf(
+                    "type" to "number",
+                    "minimum" to 0,
+                    "maximum" to 1
+                ),
+                "reason" to mapOf("type" to "string")
+            ),
+            "required" to listOf("action", "confidence", "reason"),
+            "additionalProperties" to false
+        )
 
         const val SYSTEM_PROMPT = """
             Ты — консервативный фильтр подтверждения сигналов торгового бота.

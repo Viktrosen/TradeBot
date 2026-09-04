@@ -25,7 +25,9 @@ class StrategyManager(
         "rsi" to rsiStrategy,
         "macd" to macdStrategy,
         "bb" to bbStrategy,
-        "bollinger" to bbStrategy
+        "bollinger" to bbStrategy,
+        "supertrend" to superTrendStrategy,
+        "vwap" to vwapStrategy
     )
 
     private val strategiesById = mapOf(
@@ -145,11 +147,6 @@ class StrategyManager(
     fun switchToSimpleStrategy(strategyName: String) {
         currentStrategy = simpleStrategies[strategyName.lowercase()] ?: crossEmaStrategy
         logger.info { "🔄 Переключено на стратегию: ${currentStrategy.name}" }
-        if (strategyName.lowercase() == "supertrend") {
-            logger.info { "📈 SuperTrend стратегия активирована для ${currentStrategy.name}" }
-        } else if (strategyName.lowercase() == "vwap") {
-            logger.info { "📊 VWAP стратегия активирована для ${currentStrategy.name}" }
-        }
     }
 
     fun switchToVotingStrategy(weights: Map<String, Int>) {
