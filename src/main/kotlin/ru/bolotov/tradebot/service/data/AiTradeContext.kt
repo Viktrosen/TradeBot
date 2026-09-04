@@ -22,6 +22,7 @@ data class AiTradeContext(
             strategy = AiStrategyContext(
                 name = strategy.name,
                 explanation = strategy.getExplanation(marketData),
+                details = strategy.getAiDetails(marketData),
                 candlestickPattern = marketData.candlestickPattern?.pattern?.name,
                 candlestickConfidence = marketData.candlestickPattern?.confidence,
                 candlestickTimeframe = marketData.candlestickPattern?.candleKey?.substringBefore(':')

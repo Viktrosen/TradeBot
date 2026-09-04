@@ -86,6 +86,15 @@ class SuperTrendStrategy(
         val direction = states[data.instrumentId]?.direction?.name ?: "UNDEFINED"
         return "SuperTrend ATR bands; направление: $direction; период: $atrPeriod; множитель: $multiplier"
     }
+
+    override fun getAiDetails(data: MarketData): StrategyAiDetails? =
+        states[data.instrumentId]?.let { state ->
+            StrategyAiDetails(
+                trendDirection = state.direction.name,
+                upperBand = state.upperBand.takeIf { it > BigDecimal.ZERO },
+                lowerBand = state.lowerBand.takeIf { it > BigDecimal.ZERO }
+            )
+        }
 }
 
 private data class SuperTrendState(

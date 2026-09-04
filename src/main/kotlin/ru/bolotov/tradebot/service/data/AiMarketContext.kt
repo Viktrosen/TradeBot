@@ -13,13 +13,21 @@ data class AiMarketContext(
     val macdHistogram: BigDecimal?,
     val bollingerPercentB: Double?,
     val atr: BigDecimal?,
+    val vwap: BigDecimal?,
+    val vwapDeviationPercent: Double?,
     val volume: Long,
     val averageVolume: Long,
     val volatility: Double,
     val spread: BigDecimal
 ) {
     companion object {
-        fun from(data: MarketData) = AiMarketContext(
+        fun from(data: MarketData): AiMarketContext {
+            val vwap = data.vwap?.takeIf { it > BigDecimal.ZERO }
+            val vwapDeviationPercent = vwap?.let {
+                (data.currentPrice.toDouble() - it.toDouble()) / it.toDouble() * 100
+            }
+
+            return AiMarketContext(
             instrument = data.instrumentName,
             currentPrice = data.currentPrice,
             ema5 = data.ema5,
@@ -28,10 +36,13 @@ data class AiMarketContext(
             macdHistogram = data.macd?.histogram,
             bollingerPercentB = data.bollingerBands?.percentB,
             atr = data.atr,
+            vwap = vwap,
+            vwapDeviationPercent = vwapDeviationPercent,
             volume = data.volume,
             averageVolume = data.avgVolume,
             volatility = data.volatility,
             spread = data.spread
         )
+        }
     }
 }

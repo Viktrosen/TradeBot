@@ -7,7 +7,23 @@ interface TradingStrategy {
     val description: String
     fun analyze(data: MarketData): Signal
     fun getExplanation(data: MarketData): String
+
+    /**
+     * Возвращает дополнительное структурированное состояние стратегии для AI-фильтра.
+     *
+     * Значение не участвует в принятии торгового решения самой стратегией. Оно нужно,
+     * чтобы AI не пытался восстановить специфичные для стратегии данные из текста
+     * объяснения или нерелевантных общих индикаторов.
+     */
+    fun getAiDetails(data: MarketData): StrategyAiDetails? = null
 }
+
+/** Структурированные параметры стратегии, применимые к её текущему сигналу. */
+data class StrategyAiDetails(
+    val trendDirection: String? = null,
+    val upperBand: BigDecimal? = null,
+    val lowerBand: BigDecimal? = null
+)
 
 /**
  * Конфигурируемая стратегия (может менять параметры)
