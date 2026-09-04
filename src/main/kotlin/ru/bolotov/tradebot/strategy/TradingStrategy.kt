@@ -49,7 +49,8 @@ data class MarketData(
     // НОВОЕ: для Choppiness Index и ADX
     val high14: BigDecimal? = null,   // max price за 14 свечей
     val low14: BigDecimal? = null,    // min price за 14 свечей
-    val adx: Double? = null           // Average Directional Index
+    val adx: Double? = null,          // Average Directional Index
+    val vwap: BigDecimal? = null      // VWAP по последним закрытым M5-свечам
 )
 
 data class MacdData(

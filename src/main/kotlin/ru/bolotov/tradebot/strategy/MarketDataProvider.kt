@@ -94,7 +94,8 @@ class MarketDataProvider(
                 // НОВОЕ: для Choppiness Index и ADX
                 high14 = indicators.high14,
                 low14 = indicators.low14,
-                adx = indicators.adx
+                adx = indicators.adx,
+                vwap = indicators.vwap
             )
         } catch (e: Exception) {
             logMarketDataFailure(instrumentUid, e)
@@ -192,8 +193,8 @@ class MarketDataProvider(
         val ema200Series = calculateEMASeries(closes, 200)
 
         // НОВОЕ: high14, low14 для Choppiness Index
-        val high14 = candles.takeLast(14).maxOfOrNull { it.close.toBigDecimal() }
-        val low14 = candles.takeLast(14).minOfOrNull { it.close.toBigDecimal() }
+        val high14 = candles.takeLast(14).maxOfOrNull { it.high.toBigDecimal() }
+        val low14 = candles.takeLast(14).minOfOrNull { it.low.toBigDecimal() }
 
         // НОВОЕ: ADX для определения силы тренда
         val adx = calculateADX(candles, 14)
@@ -216,8 +217,23 @@ class MarketDataProvider(
             // НОВОЕ
             high14 = high14,
             low14 = low14,
-            adx = adx
+            adx = adx,
+            vwap = calculateVwap(candles)
         )
+    }
+
+    /** VWAP по закрытым M5-свечам: типичная цена (H+L+C)/3, взвешенная объёмом. */
+    private fun calculateVwap(candles: List<HistoricCandle>, period: Int = 20): BigDecimal? {
+        val window = candles.takeLast(period).filter { it.volume > 0 }
+        val totalVolume = window.sumOf(HistoricCandle::getVolume)
+        if (totalVolume == 0L) return null
+
+        val weightedPrice = window.fold(BigDecimal.ZERO) { total, candle ->
+            val typicalPrice = (candle.high.toBigDecimal() + candle.low.toBigDecimal() + candle.close.toBigDecimal())
+                .divide(BigDecimal(3), calculationContext)
+            total + typicalPrice * candle.volume.toBigDecimal()
+        }
+        return weightedPrice.divide(totalVolume.toBigDecimal(), calculationContext)
     }
 
     private fun isExpired(entry: CandleHistoryCacheEntry, now: Instant): Boolean =
@@ -535,6 +551,7 @@ class MarketDataProvider(
         // НОВОЕ: для Choppiness Index и ADX
         val high14: BigDecimal? = null,
         val low14: BigDecimal? = null,
-        val adx: Double? = null
+        val adx: Double? = null,
+        val vwap: BigDecimal? = null
     )
 }

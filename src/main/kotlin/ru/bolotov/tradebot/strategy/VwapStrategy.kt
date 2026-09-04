@@ -26,13 +26,8 @@ class VwapStrategy(
 
     override fun analyze(data: MarketData): Signal {
         val currentPrice = data.currentPrice
-        val volume = data.volume
-        val avgVolume = data.avgVolume
-
-        // Расчёт VWAP как weighted average на основе доступных данных
-        // VWAP = cumulative(Volume * Price) / cumulative(Volume)
-        // Используем volume/avgVolume ratio как прокси для cumulative
-        val vwap = calculateVWAP(currentPrice, volume, avgVolume)
+        val vwap = data.vwap ?: return Signal.HOLD
+        if (vwap <= BigDecimal.ZERO) return Signal.HOLD
 
         val deviation = (currentPrice.toDouble() - vwap.toDouble()) / vwap.toDouble()
 
@@ -58,22 +53,9 @@ class VwapStrategy(
     }
 
     override fun getExplanation(data: MarketData): String {
-        val vwap = calculateVWAP(data.currentPrice, data.volume, data.avgVolume)
+        val vwap = data.vwap ?: return "VWAP недоступен: недостаточно объёма закрытых свечей"
         val deviation = (data.currentPrice.toDouble() - vwap.toDouble()) / vwap.toDouble() * 100
         return "VWAP deviation analysis; deviation=${"%.2f".format(deviation)}%; threshold=${deviationThreshold * 100}%"
     }
 
-    private fun calculateVWAP(currentPrice: BigDecimal, volume: Long, avgVolume: Long): BigDecimal {
-        // Упрощённый расчёт VWAP:
-        // Если volume > avgVolume, значит цена смещена от VWAP
-        // Используем volume ratio как корректировку к текущей цене
-        return if (avgVolume > 0 && volume > 0) {
-            val volumeRatio = volume.toDouble() / avgVolume.toDouble()
-            // Если volume > avgVolume, цена выше VWAP;反之亦然
-            val adjustment = (volumeRatio - 1.0) * 0.01 // 1% adjustment per volume ratio unit
-            currentPrice.multiply(BigDecimal(1.0 - adjustment))
-        } else {
-            currentPrice // fallback
-        }
-    }
 }

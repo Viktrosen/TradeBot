@@ -139,7 +139,10 @@ class TradeEventService(
         closePrice: BigDecimal,
         pnl: BigDecimal,
         reason: String,
-        explanation: String = "Закрытие позиции, P&L: $pnl RUB"
+        explanation: String = "Закрытие позиции, P&L: $pnl RUB",
+        brokerOrderId: String? = null,
+        executionStatus: String? = null,
+        brokerOrderState: String? = null
     ): TradeEvent? {
         if (hasCloseEvent(position.positionId)) {
             tradeEventLogger.warn {
@@ -163,7 +166,10 @@ class TradeEventService(
             positionId = position.positionId,
             explanation = explanation,
             status = EventStatus.PROCESSED,
-            processedAt = Instant.now()
+            processedAt = Instant.now(),
+            brokerOrderId = brokerOrderId,
+            executionStatus = executionStatus,
+            brokerOrderState = brokerOrderState
         )
         return tradeEventRepository.save(closeEvent)
     }

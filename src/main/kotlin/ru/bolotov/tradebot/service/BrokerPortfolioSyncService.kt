@@ -19,7 +19,6 @@ import ru.ttech.piapi.core.InstrumentsServiceSync
 import ru.ttech.piapi.core.OperationsServiceSync
 import java.math.BigDecimal
 import java.time.Instant
-import java.util.UUID
 
 private val portfolioSyncLogger = KotlinLogging.logger {}
 
@@ -160,7 +159,8 @@ class BrokerPortfolioSyncService(
                     }
                     if (tradeEventService.hasCloseEvent(positionId)) {
                         portfolioSyncLogger.info {
-                            "Позиция ${instrumentInfo.name} не восстановлена: для positionId=$positionId уже есть CLOSE-событие"
+                            "Позиция ${instrumentInfo.name} не восстановлена: " +
+                                "для positionId=$positionId уже есть CLOSE-событие"
                         }
                         continue
                     }
@@ -274,9 +274,17 @@ class BrokerPortfolioSyncService(
         val positionId = tradeEventService.findLastOpenPositionId(instrumentId, direction)
         if (positionId != null) return positionId
 
-        if (side == PositionSide.LONG) return UUID.randomUUID().toString()
+        if (side == PositionSide.LONG) {
+            portfolioSyncLogger.error {
+                "Длинная позиция $instrumentId не восстановлена: нет активного OPEN/BUY-события бота. " +
+                    "Позиция считается внешней или остаточной после исполнения защитной заявки и не будет " +
+                    "автоматически сопровождаться. Проверьте операции брокера."
+            }
+            return null
+        }
         portfolioSyncLogger.error {
-            "Шорт $instrumentId не восстановлен: не найдено OPEN-событие бота"
+            "Короткая позиция $instrumentId не восстановлена: " +
+                "не найдено OPEN-событие бота"
         }
         return null
     }

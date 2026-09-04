@@ -276,7 +276,8 @@ class OrderExecutionService(
         BrokerOrderExecution(
             price = moneyValueToBigDecimal(state.averagePositionPrice),
             commission = moneyValueToBigDecimal(state.executedCommission) ?: BigDecimal.ZERO,
-            status = state.executionReportStatus.name
+            status = state.executionReportStatus.name,
+            lotsExecuted = state.lotsExecuted
         )
     }.onFailure { error ->
         logger.warn(error) { "Не удалось получить исполнение заявки $orderId" }
@@ -351,7 +352,8 @@ data class BrokerLotLimits(
 data class BrokerOrderExecution(
     val price: BigDecimal?,
     val commission: BigDecimal,
-    val status: String
+    val status: String,
+    val lotsExecuted: Long
 )
 
 data class OrderFillResult(

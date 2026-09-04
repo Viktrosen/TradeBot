@@ -182,6 +182,15 @@ class BrokerProtectionReconciliationService(
             !position.isPresentAtBroker(brokerQuantities[position.instrumentId])
         }
         closedPositions.forEach { position ->
+            val brokerQuantity = brokerQuantities[position.instrumentId] ?: BigDecimal.ZERO
+            if (brokerQuantity != BigDecimal.ZERO) {
+                reconciliationLogger.error {
+                    "КРИТИЧЕСКОЕ расхождение после защитной заявки: ${position.instrumentName}, " +
+                        "ожидалось нулевое количество после закрытия ${position.side}, " +
+                        "но у брокера осталось $brokerQuantity. Локальная позиция будет закрыта, " +
+                        "остаток не будет автоматически принят ботом. Проверьте операции брокера."
+                }
+            }
             val triggered = positionProtectionService.findTriggeredProtection(position, snapshot)
             if (triggered == null) {
                 reconciliationLogger.warn {
@@ -190,9 +199,8 @@ class BrokerProtectionReconciliationService(
                 return@forEach
             }
 
-            val execution = triggered.stopOrder.takeIf { it.hasExchangeOrderId() }
-                ?.exchangeOrderId
-                ?.let { orderExecutionService.getExecutedOrder(accountId, it) }
+            val exchangeOrderId = triggered.stopOrder.takeIf { it.hasExchangeOrderId() }?.exchangeOrderId
+            val execution = exchangeOrderId?.let { orderExecutionService.getExecutedOrder(accountId, it) }
             val closePrice = execution?.price ?: triggered.stopOrder.price.toBigDecimal()
             val closeCommission = execution?.commission ?: BigDecimal.ZERO
             val result = positionLifecycleService.recordBrokerProtectionClose(
@@ -201,7 +209,10 @@ class BrokerProtectionReconciliationService(
                 triggeredOrderId = triggered.orderId,
                 reason = triggered.reason,
                 closePrice = closePrice,
-                closeCommission = closeCommission
+                closeCommission = closeCommission,
+                executionOrderId = exchangeOrderId,
+                executionStatus = execution?.status ?: triggered.stopOrder.status.name,
+                executedLots = execution?.lotsExecuted
             )
             if (result.removeFromState) {
                 onClosed?.invoke(position)

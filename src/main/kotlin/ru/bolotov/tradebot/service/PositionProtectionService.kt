@@ -154,7 +154,10 @@ class PositionProtectionService(
         protection.updateStatus = ProtectionUpdateStatus.ACTIVE
         protection.updatedAt = Instant.now()
         positionProtectionRepository.save(protection)
-        protectionLogger.info { "Созданы защитные заявки для ${position.instrumentName}: SL=${pair.stopLossOrderId}, TP=${pair.takeProfitOrderId}" }
+        protectionLogger.info {
+            "Создана брокерская защита для ${position.instrumentName}: SL=${pair.stopLossOrderId}; " +
+                "тейк-профит контролируется ботом, чтобы исключить двойное исполнение"
+        }
         ProtectionCreationResult.Created
     }.getOrElse { error ->
         protectionLogger.error(error) { "Не удалось создать защитные заявки для ${position.instrumentName}" }
@@ -174,41 +177,37 @@ class PositionProtectionService(
         val current = positionProtectionRepository.findByPositionId(position.positionId) ?: return@withPositionLock ProtectionReplacementResult.Failed(
             "Не найдена защита позиции ${position.instrumentName} после восстановления"
         )
-        current.updateStatus = ProtectionUpdateStatus.CREATING_REPLACEMENT
-        current.updatedAt = Instant.now()
-        positionProtectionRepository.save(current)
-
-        val pair = try {
-            createOrderPair(accountId, position, stopLossPercent, takeProfitPercent)
-        } catch (error: Exception) {
-            current.updateStatus = ProtectionUpdateStatus.ACTIVE
-            current.updatedAt = Instant.now()
-            positionProtectionRepository.save(current)
-            return@withPositionLock ProtectionReplacementResult.Failed(
-                "Не удалось создать новую защиту для ${position.instrumentName}: ${error.message}"
-            )
-        }
-
-        current.replacementStopLossOrderId = pair.stopLossOrderId
-        current.replacementTakeProfitOrderId = pair.takeProfitOrderId
-        current.updateStatus = ProtectionUpdateStatus.REPLACEMENT_CREATED
+        current.updateStatus = ProtectionUpdateStatus.CANCELLING_PREVIOUS
         current.updatedAt = Instant.now()
         positionProtectionRepository.save(current)
 
         if (!cancelCurrentPair(accountId, current, position.instrumentName)) {
             return@withPositionLock ProtectionReplacementResult.Failed(
-                "Новая защита ${position.instrumentName} создана, но прежняя пара не отменена; требуется повторная сверка"
+                "Не удалось отменить прежний SL ${position.instrumentName}; новая защита не создавалась"
             )
         }
 
-        current.stopLossOrderId = current.replacementStopLossOrderId
-        current.takeProfitOrderId = current.replacementTakeProfitOrderId
+        val pair = try {
+            createOrderPair(accountId, position, stopLossPercent, takeProfitPercent)
+        } catch (error: Exception) {
+            current.stopLossOrderId = null
+            current.takeProfitOrderId = null
+            current.updateStatus = ProtectionUpdateStatus.ACTIVE
+            current.updatedAt = Instant.now()
+            positionProtectionRepository.save(current)
+            return@withPositionLock ProtectionReplacementResult.Failed(
+                "Прежний SL отменён, но новый не создан для ${position.instrumentName}: ${error.message}"
+            )
+        }
+
+        current.stopLossOrderId = pair.stopLossOrderId
+        current.takeProfitOrderId = null
         current.replacementStopLossOrderId = null
         current.replacementTakeProfitOrderId = null
         current.updateStatus = ProtectionUpdateStatus.ACTIVE
         current.updatedAt = Instant.now()
         positionProtectionRepository.save(current)
-        protectionLogger.info { "Обновлены SL/TP для ${position.instrumentName}" }
+        protectionLogger.info { "Обновлён брокерский SL для ${position.instrumentName}; TP контролируется ботом" }
         ProtectionReplacementResult.Success
     } ?: ProtectionReplacementResult.Failed("Защита позиции ${position.instrumentName} уже изменяется")
 
@@ -236,7 +235,7 @@ class PositionProtectionService(
         if (protection.updateStatus == ProtectionUpdateStatus.ACTIVE) return
 
         protectionLogger.warn { "Восстанавливаем незавершённую замену защиты ${position.instrumentName}" }
-        if (protection.replacementStopLossOrderId == null || protection.replacementTakeProfitOrderId == null) {
+        if (protection.replacementStopLossOrderId == null) {
             cancelReplacementPair(accountId, protection, position.instrumentName)
             protection.updateStatus = ProtectionUpdateStatus.ACTIVE
             positionProtectionRepository.save(protection)
@@ -264,9 +263,10 @@ class PositionProtectionService(
             withPositionLock(position.positionId) { recoverInterruptedReplacement(accountId, position, protection) }
             return
         }
+        if (!removeLegacyTakeProfit(accountId, position, protection, snapshot.activeOrderIds)) return
         if (protection.hasActivePairIn(snapshot.activeOrderIds)) return
 
-        protectionLogger.warn { "Защитные заявки ${position.instrumentName} отсутствуют; восстанавливаем пару" }
+        protectionLogger.warn { "Брокерский стоп-лосс ${position.instrumentName} отсутствует; восстанавливаем защиту" }
         if (cancelProtection(accountId, position.positionId, position.instrumentName)) {
             createProtection(accountId, position)
         }
@@ -275,13 +275,7 @@ class PositionProtectionService(
     private fun createOrderPair(accountId: String, position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionOrderPair {
         val prices = calculateProtectionPrices(position, stopLossPercent, takeProfitPercent)
         val stopLossOrderId = createStopOrder(accountId, position, prices.stopLossPrice, StopOrderType.STOP_ORDER_TYPE_STOP_LOSS)
-        return try {
-            val takeProfitOrderId = createStopOrder(accountId, position, prices.takeProfitPrice, StopOrderType.STOP_ORDER_TYPE_TAKE_PROFIT)
-            ProtectionOrderPair(stopLossOrderId, takeProfitOrderId)
-        } catch (error: Exception) {
-            cancelStopOrder(accountId, stopLossOrderId, position.instrumentName)
-            throw error
-        }
+        return ProtectionOrderPair(stopLossOrderId)
     }
 
     private fun calculateProtectionPrices(position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionPrices {
@@ -328,6 +322,30 @@ class PositionProtectionService(
             .forEach { cancelStopOrder(accountId, it, instrumentName) }
         protection.replacementStopLossOrderId = null
         protection.replacementTakeProfitOrderId = null
+    }
+
+    /** Удаляет устаревший брокерский TP, созданный до перехода на единственный SL. */
+    private fun removeLegacyTakeProfit(
+        accountId: String,
+        position: OpenPosition,
+        protection: PositionProtectionEntity,
+        activeOrderIds: Set<String>
+    ): Boolean {
+        val takeProfitOrderId = protection.takeProfitOrderId ?: return true
+        if (takeProfitOrderId in activeOrderIds && !cancelStopOrder(accountId, takeProfitOrderId, position.instrumentName)) {
+            protectionLogger.error {
+                "Не удалось отменить устаревший брокерский TP ${position.instrumentName}; " +
+                    "сопровождение позиции остановлено, чтобы не создавать вторую встречную заявку"
+            }
+            return false
+        }
+        protection.takeProfitOrderId = null
+        protection.updatedAt = Instant.now()
+        positionProtectionRepository.save(protection)
+        protectionLogger.warn {
+            "Устаревший брокерский TP ${position.instrumentName} отменён: тейк-профит контролируется ботом"
+        }
+        return true
     }
 
     private fun getPriceIncrement(instrumentId: String): BigDecimal {
@@ -381,13 +399,13 @@ class PositionProtectionService(
     }
 
     private val PositionProtectionEntity.hasActivePair: Boolean
-        get() = stopLossOrderId != null && takeProfitOrderId != null && updateStatus == ProtectionUpdateStatus.ACTIVE
+        get() = stopLossOrderId != null && updateStatus == ProtectionUpdateStatus.ACTIVE
 
     private val PositionProtectionEntity.allOrderIds: List<String>
         get() = listOfNotNull(stopLossOrderId, takeProfitOrderId, replacementStopLossOrderId, replacementTakeProfitOrderId)
 
     private fun PositionProtectionEntity.hasActivePairIn(activeOrderIds: Set<String>): Boolean =
-        stopLossOrderId in activeOrderIds && takeProfitOrderId in activeOrderIds
+        stopLossOrderId in activeOrderIds
 
     private fun BigDecimal.roundToIncrement(increment: BigDecimal, roundingMode: RoundingMode): BigDecimal =
         divide(increment, 0, roundingMode).multiply(increment)

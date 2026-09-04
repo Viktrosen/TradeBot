@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
+import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
@@ -27,9 +28,7 @@ class SuperTrendStrategy(
     override val name = "SuperTrend"
     override val description = "ATR-based trend following с динамическими полосами"
 
-    private var previousDirection: TrendDirection = TrendDirection.UPTREND
-    private var previousUpperBand: BigDecimal = BigDecimal.ZERO
-    private var previousLowerBand: BigDecimal = BigDecimal.ZERO
+    private val states = ConcurrentHashMap<String, SuperTrendState>()
 
     override fun analyze(data: MarketData): Signal {
         val atr = data.atr ?: return Signal.HOLD
@@ -37,66 +36,63 @@ class SuperTrendStrategy(
             return Signal.HOLD
         }
 
-        // Middle band = currentPrice + 0.5 * ATR
-        val middle = data.currentPrice + (atr.multiply(BigDecimal("0.5")))
+        val previous = states[data.instrumentId]
+        // При отсутствии предыдущей закрытой свечи направление ещё не определено.
+        // Это исключает вход на первом же тике после старта приложения.
+        if (previous == null) {
+            states[data.instrumentId] = SuperTrendState(TrendDirection.UPTREND, BigDecimal.ZERO, BigDecimal.ZERO)
+            return Signal.HOLD
+        }
+
+        val middle = data.currentPrice
 
         val multiplierBD = BigDecimal.valueOf(multiplier)
         var upperBand = middle + (atr.multiply(multiplierBD))
         var lowerBand = middle - (atr.multiply(multiplierBD))
 
         // Adjust bands based on previous values
-        when (previousDirection) {
+        var direction = previous.direction
+        when (direction) {
             TrendDirection.UPTREND -> {
-                if (lowerBand < previousLowerBand) {
-                    lowerBand = previousLowerBand
+                if (lowerBand < previous.lowerBand) {
+                    lowerBand = previous.lowerBand
                 }
-                if (data.currentPrice > previousUpperBand) {
-                    previousDirection = TrendDirection.DOWNTREND
-                    upperBand = lowerBand
-                    logger.info { "📈 SuperTrend: смена направления на DOWNTREND для ${data.instrumentName}" }
+                if (previous.upperBand > BigDecimal.ZERO && data.currentPrice < previous.lowerBand) {
+                    direction = TrendDirection.DOWNTREND
+                    logger.info { "SuperTrend: смена направления на DOWNTREND для ${data.instrumentName}" }
                 }
             }
             TrendDirection.DOWNTREND -> {
-                if (upperBand > previousUpperBand) {
-                    upperBand = previousUpperBand
+                if (previous.upperBand > BigDecimal.ZERO && upperBand > previous.upperBand) {
+                    upperBand = previous.upperBand
                 }
-                if (data.currentPrice < previousLowerBand) {
-                    previousDirection = TrendDirection.UPTREND
-                    lowerBand = upperBand
-                    logger.info { "📉 SuperTrend: смена направления на UPTREND для ${data.instrumentName}" }
+                if (data.currentPrice > previous.upperBand) {
+                    direction = TrendDirection.UPTREND
+                    logger.info { "SuperTrend: смена направления на UPTREND для ${data.instrumentName}" }
                 }
             }
         }
 
-        previousUpperBand = upperBand
-        previousLowerBand = lowerBand
+        states[data.instrumentId] = SuperTrendState(direction, upperBand, lowerBand)
 
         return when {
-            previousDirection == TrendDirection.UPTREND && data.currentPrice > upperBand -> {
-                logger.info { "🟢 SuperTrend: BUY сигнал для ${data.instrumentName} (цена выше верхней полосы)" }
-                Signal(
-                    OrderDirection.BUY,
-                    0.75,
-                    "SuperTrend: цена выше верхней полосы (UPTREND)"
-                )
-            }
-            previousDirection == TrendDirection.DOWNTREND && data.currentPrice < lowerBand -> {
-                logger.info { "🔴 SuperTrend: SELL сигнал для ${data.instrumentName} (цена ниже нижней полосы)" }
-                Signal(
-                    OrderDirection.SELL,
-                    0.75,
-                    "SuperTrend: цена ниже нижней полосы (DOWNTREND)"
-                )
-            }
+            previous.direction != direction && direction == TrendDirection.UPTREND -> Signal(OrderDirection.BUY, 0.75, "SuperTrend: смена на восходящий тренд")
+            previous.direction != direction && direction == TrendDirection.DOWNTREND -> Signal(OrderDirection.SELL, 0.75, "SuperTrend: смена на нисходящий тренд")
             else -> Signal.HOLD
         }
     }
 
     override fun getExplanation(data: MarketData): String {
-        val direction = previousDirection.name
+        val direction = states[data.instrumentId]?.direction?.name ?: "UNDEFINED"
         return "SuperTrend ATR bands; направление: $direction; период: $atrPeriod; множитель: $multiplier"
     }
 }
+
+private data class SuperTrendState(
+    val direction: TrendDirection,
+    val upperBand: BigDecimal,
+    val lowerBand: BigDecimal
+)
 
 enum class TrendDirection {
     UPTREND,

@@ -355,7 +355,10 @@ class PositionLifecycleService(
         triggeredOrderId: String,
         reason: String,
         closePrice: BigDecimal,
-        closeCommission: BigDecimal
+        closeCommission: BigDecimal,
+        executionOrderId: String? = null,
+        executionStatus: String? = null,
+        executedLots: Long? = null
     ): ClosePositionResult {
         if (tradeEventService.hasCloseEvent(position.positionId)) {
             return ClosePositionResult(position, closed = false, removeFromState = true)
@@ -377,7 +380,15 @@ class PositionLifecycleService(
                 closePrice = closePrice,
                 pnl = pnl,
                 reason = reason,
-                explanation = closeExplanation(reason, pnl)
+                explanation = closeExplanation(reason, pnl),
+                brokerOrderId = executionOrderId ?: triggeredOrderId,
+                executionStatus = executionStatus,
+                brokerOrderState = buildProtectionExecutionState(
+                    stopOrderId = triggeredOrderId,
+                    exchangeOrderId = executionOrderId,
+                    executedLots = executedLots,
+                    expectedLots = position.quantity
+                )
             )
             closeEvent?.let(eventPublisherService::publishTradeExecuted)
             positionLifecycleLogger.info {
@@ -569,6 +580,18 @@ class PositionLifecycleService(
         "STOP_LOSS" -> "Позиция закрыта по стоп-лоссу. Итоговый P&L: $pnl RUB"
         "TAKE_PROFIT" -> "Позиция закрыта по тейк-профиту. Итоговый P&L: $pnl RUB"
         else -> "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
+    }
+
+    private fun buildProtectionExecutionState(
+        stopOrderId: String,
+        exchangeOrderId: String?,
+        executedLots: Long?,
+        expectedLots: Long
+    ): String = buildString {
+        append("stop_order_id=$stopOrderId")
+        exchangeOrderId?.let { append("; exchange_order_id=$it") }
+        executedLots?.let { append("; lots_executed=$it") }
+        append("; expected_lots=$expectedLots")
     }
 
     private suspend fun waitForOpenFill(
