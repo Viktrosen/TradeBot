@@ -38,6 +38,7 @@ import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.StrategyManager
 import ru.bolotov.tradebot.strategy.TradingStrategy
 import ru.bolotov.tradebot.strategy.regime.MarketRegimeService
+import ru.bolotov.tradebot.strategy.regime.MarketRegimeDecision
 import ru.bolotov.tradebot.strategy.regime.MarketRegimeStrategySelector
 import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import ru.bolotov.tradebot.service.data.AiFilterResult
@@ -718,11 +719,13 @@ class TradingBotService(
 
             val longPosition = currentPosition ?: synchronizePositionForSell(strategyMarketData)
             if (longPosition != null) {
-                emitCloseSignalIfApproved(longPosition, strategyMarketData, signal, strategy)
+                emitCloseSignalIfApproved(
+                    longPosition, strategyMarketData, signal, selection, regimeDecision
+                )
                 return@flow
             }
 
-            emitOpenSignalIfApproved(strategyMarketData, signal, selection, null)
+            emitOpenSignalIfApproved(strategyMarketData, signal, selection, regimeDecision, null)
             return@flow
         }
 
@@ -736,21 +739,28 @@ class TradingBotService(
         }
 
         if (currentPosition?.side == PositionSide.SHORT) {
-            emitCloseSignalIfApproved(currentPosition, strategyMarketData, signal, strategy)
+            emitCloseSignalIfApproved(
+                currentPosition, strategyMarketData, signal, selection, regimeDecision
+            )
             return@flow
         }
-        if (currentPosition == null) emitOpenSignalIfApproved(strategyMarketData, signal, selection, null)
+        if (currentPosition == null) {
+            emitOpenSignalIfApproved(strategyMarketData, signal, selection, regimeDecision, null)
+        }
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<BotSignal>.emitCloseSignalIfApproved(
         position: OpenPosition,
         marketData: MarketData,
         signal: ru.bolotov.tradebot.strategy.Signal,
-        strategy: TradingStrategy
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision
     ) {
         if (!canCloseByStrategy(position, marketData, signal)) return
 
-        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, strategy, position)
+        val aiResult = aiTradeSignalFilter.evaluate(
+            marketData, signal, selection, regimeDecision, position
+        )
         if (!aiResult.approved) {
             logger.info { "Закрытие отклонено AI-фильтром: ${marketData.instrumentName}" }
             return
@@ -762,7 +772,7 @@ class TradingBotService(
                 reason = CloseReason.STRATEGY_SIGNAL,
                 aiResult = aiResult,
                 sourceCandleKey = marketData.candlestickPattern?.candleKey ?: marketData.signalCandleKey,
-                strategyId = strategyManager.getCurrentStrategyIdFor(strategy)
+                strategyId = selection.id
             )
         )
     }
@@ -771,11 +781,14 @@ class TradingBotService(
         marketData: MarketData,
         signal: ru.bolotov.tradebot.strategy.Signal,
         selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
         currentPosition: OpenPosition?
     ) {
         if (!canExecuteOpenSignal(marketData, signal)) return
 
-        val aiResult = aiTradeSignalFilter.evaluate(marketData, signal, selection.strategy, currentPosition)
+        val aiResult = aiTradeSignalFilter.evaluate(
+            marketData, signal, selection, regimeDecision, currentPosition
+        )
         if (!aiResult.approved) {
             logger.info { "Открытие отклонено AI-фильтром: ${marketData.instrumentName}" }
             return

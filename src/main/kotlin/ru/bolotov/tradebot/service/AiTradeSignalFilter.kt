@@ -18,6 +18,8 @@ import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.OrderDirection
 import ru.bolotov.tradebot.strategy.Signal
 import ru.bolotov.tradebot.strategy.TradingStrategy
+import ru.bolotov.tradebot.strategy.regime.MarketRegimeDecision
+import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -55,7 +57,8 @@ class AiTradeSignalFilter(
     fun evaluate(
         marketData: MarketData,
         signal: Signal,
-        strategy: TradingStrategy,
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
         position: OpenPosition?
     ): AiFilterResult {
         if (!enabled) return AiFilterResult(approved = true)
@@ -67,8 +70,8 @@ class AiTradeSignalFilter(
 
         return try {
             val startedAt = System.nanoTime()
-            logRequest(marketData, signal, strategy)
-            val decision = requestDecision(marketData, signal, strategy, position)
+            logRequest(marketData, signal, selection.strategy)
+            val decision = requestDecision(marketData, signal, selection, regimeDecision, position)
             resetRateLimitBackoff()
             val durationMs = (System.nanoTime() - startedAt) / NANOS_IN_MILLISECOND
             val requiredConfidence = requiredConfidence(signal, position, marketData.currentPrice)
@@ -111,14 +114,15 @@ class AiTradeSignalFilter(
     private fun requestDecision(
         marketData: MarketData,
         signal: Signal,
-        strategy: TradingStrategy,
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
         position: OpenPosition?
     ): AiDecision {
         val response = restClient.post()
             .uri("/models/{model}:generateContent", model)
             .contentType(MediaType.APPLICATION_JSON)
             .header(GEMINI_API_KEY_HEADER, apiKey)
-            .body(createRequest(marketData, signal, strategy, position))
+            .body(createRequest(marketData, signal, selection, regimeDecision, position))
             .exchange { _, response ->
                 response.body.bufferedReader().use { reader ->
                     val responseBody = reader.readText()
@@ -148,7 +152,8 @@ class AiTradeSignalFilter(
     private fun createRequest(
         marketData: MarketData,
         signal: Signal,
-        strategy: TradingStrategy,
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
         position: OpenPosition?
     ): Map<String, Any> = mapOf(
         "systemInstruction" to mapOf(
@@ -160,7 +165,9 @@ class AiTradeSignalFilter(
                 "parts" to listOf(
                     mapOf(
                         "text" to objectMapper.writeValueAsString(
-                            AiTradeContext.from(marketData, signal, strategy, position)
+                            AiTradeContext.from(
+                                marketData, signal, selection, regimeDecision, position
+                            )
                         )
                     )
                 )
@@ -342,11 +349,23 @@ class AiTradeSignalFilter(
             Оценивай только переданные структурированные данные рынка и сигнал стратегии.
             Не выдумывай новости, цены, индикаторы или прочие данные.
 
+            marketRegime — внутренний подтверждённый режим TradeBot, по которому выбрана strategy.id.
+            Он объясняет назначение стратегии, но не является самостоятельным торговым сигналом.
+            Оценивай его только совместно с данными strategy, signal и market.
+
             Если position отсутствует, BUY означает открытие LONG, а SELL — открытие SHORT.
             Одобряй открытие только при согласованном подтверждении стратегии и индикаторов. Не одобряй
             вход при противоречивых индикаторах, недостатке данных или чрезмерно растянутом движении цены.
 
             Особенности стратегий:
+            - Cross EMA: проверяй именно факт пересечения по previousEma5, previousEma21 и текущим EMA,
+              а не только их текущее взаимное положение.
+            - CandlestickPatterns: используй candlestickPattern, candlestickConfidence и candlestickTimeframe.
+              Отсутствие паттерна или низкая уверенность — основание не одобрять новый вход.
+            - Voting: signal.reason содержит итог голосования и весов. Не считай его самостоятельным
+              подтверждением, если данные market противоречат направлению сигнала.
+            - Confirmation: signal.reason описывает индикаторы, достигшие согласия; проверяй их
+              по структурированным полям market.
             - SuperTrend: BUY или SELL означает смену направления тренда, подтверждённую ATR-полосой.
               Для неё используй strategy.details.trendDirection, upperBand и lowerBand. Не оценивай этот
               сигнал как возврат цены к средней.
