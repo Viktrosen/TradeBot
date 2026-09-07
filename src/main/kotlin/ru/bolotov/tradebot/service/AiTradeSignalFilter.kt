@@ -22,6 +22,7 @@ import ru.bolotov.tradebot.strategy.regime.MarketRegimeDecision
 import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import java.math.BigDecimal
 import java.time.Instant
+import java.util.UUID
 
 private val aiFilterLogger = KotlinLogging.logger {}
 
@@ -118,14 +119,28 @@ class AiTradeSignalFilter(
         regimeDecision: MarketRegimeDecision,
         position: OpenPosition?
     ): AiDecision {
+        val requestId = UUID.randomUUID().toString()
+        val requestBody = createRequest(marketData, signal, selection, regimeDecision, position)
+        aiFilterLogger.debug {
+            "AI-фильтр: Gemini запрос, requestId=$requestId, " +
+                "инструмент=${marketData.instrumentName}, стратегия=${selection.id}, модель=$model, " +
+                "endpoint=/models/$model:generateContent, " +
+                "generationConfig=${objectMapper.writeValueAsString(requestBody["generationConfig"])}"
+        }
         val response = restClient.post()
             .uri("/models/{model}:generateContent", model)
             .contentType(MediaType.APPLICATION_JSON)
             .header(GEMINI_API_KEY_HEADER, apiKey)
-            .body(createRequest(marketData, signal, selection, regimeDecision, position))
+            .body(requestBody)
             .exchange { _, response ->
                 response.body.bufferedReader().use { reader ->
                     val responseBody = reader.readText()
+                    aiFilterLogger.debug {
+                        "AI-фильтр: Gemini ответ, requestId=$requestId, " +
+                            "инструмент=${marketData.instrumentName}, модель=$model, " +
+                            "HTTP=${response.statusCode.value()}, размер ответа=${responseBody.length} символов" +
+                            if (response.statusCode.isError) "; ${providerErrorDiagnostics(responseBody)}" else ""
+                    }
                     if (response.statusCode.value() == HTTP_TOO_MANY_REQUESTS) {
                         throw AiRateLimitException()
                     }
@@ -148,6 +163,34 @@ class AiTradeSignalFilter(
             )
         }
     }
+
+    /**
+     * Из ошибки провайдера извлекает только служебные поля для диагностики HTTP 400.
+     * Не выводит message, descriptions, metadata и исходное тело: они могут повторять
+     * пользовательский промпт или другие данные запроса. Диагностика не влияет на обработку ошибки.
+     */
+    private fun providerErrorDiagnostics(responseBody: String): String = runCatching {
+        val error = objectMapper.readTree(responseBody).path("error")
+        val details = error.path("details").take(10).map { detail ->
+            mapOf(
+                "type" to diagnosticValue(detail.path("@type")),
+                "reason" to diagnosticValue(detail.path("reason")),
+                "domain" to diagnosticValue(detail.path("domain")),
+                "fields" to detail.path("fieldViolations").take(10).map {
+                    diagnosticValue(it.path("field"))
+                }
+            )
+        }
+        "providerCode=${diagnosticValue(error.path("code"))}, " +
+            "providerStatus=${diagnosticValue(error.path("status"))}, " +
+            "details=${objectMapper.writeValueAsString(details)}"
+    }.getOrDefault("детали ошибки недоступны: тело не удалось разобрать как JSON")
+
+    /** Ограничивает служебное значение одной строкой и маскирует ключ даже при его отражении API. */
+    private fun diagnosticValue(node: JsonNode): String = node.asText("")
+        .let { if (apiKey.isNotBlank()) it.replace(apiKey, "<скрыто>") else it }
+        .replace(Regex("\\s+"), " ")
+        .take(RESPONSE_PREVIEW_MAX_LENGTH)
 
     private fun createRequest(
         marketData: MarketData,
