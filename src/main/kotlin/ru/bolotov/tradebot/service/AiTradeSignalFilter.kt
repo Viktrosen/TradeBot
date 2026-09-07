@@ -34,11 +34,11 @@ class AiTradeSignalFilter(
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
     @Value("\${ai.gemini.api-key:}") private val apiKey: String,
     @Value("\${ai.gemini.model:gemini-2.0-flash}") private val model: String,
-    @Value("\${ai.gemini.thinking-budget:0}") private val thinkingBudget: Int,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
     @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
 ) {
+    private val decisionParser = GeminiDecisionParser(objectMapper)
     private val rateLimitLock = Any()
     private var rateLimitedUntil: Instant? = null
     private var rateLimitAttempt = 0
@@ -91,7 +91,7 @@ class AiTradeSignalFilter(
                 "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
                     "HTTP=${error.statusCode}, провайдер=Gemini, модель=$model, " +
-                    "finish_reason=${error.finishReason ?: "<не указан>"}, " +
+                    "finishReason=${error.finishReason ?: "<не указан>"}, " +
                     "ответ AI (усечён): ${error.contentPreview}"
             }
             AiFilterResult(approved = false)
@@ -153,7 +153,7 @@ class AiTradeSignalFilter(
             ?: error("Gemini вернул пустой ответ")
 
         return try {
-            parseDecision(objectMapper.readTree(response.body))
+            decisionParser.parse(objectMapper.readTree(response.body))
         } catch (error: Exception) {
             throw AiResponseFormatException(
                 statusCode = response.statusCode,
@@ -217,67 +217,27 @@ class AiTradeSignalFilter(
             )
         ),
         "generationConfig" to mapOf(
-            "temperature" to 0,
+            "temperature" to 1.0,
             "maxOutputTokens" to MAX_COMPLETION_TOKENS,
             "responseMimeType" to "application/json",
-            "responseJsonSchema" to DECISION_JSON_SCHEMA,
-            "thinkingConfig" to mapOf("thinkingBudget" to thinkingBudget)
+            "responseJsonSchema" to DECISION_JSON_SCHEMA
         )
     )
-
-    private fun parseDecision(response: JsonNode): AiDecision {
-        val content = response.path("candidates")
-            .path(0)
-            .path("content")
-            .path("parts")
-            .path(0)
-            .path("text")
-            .asText()
-            .takeIf(String::isNotBlank)
-            ?: error("Ответ Gemini не содержит решения")
-
-        val decision = objectMapper.readValue(extractJsonObject(content), AiDecision::class.java)
-            ?: error("Ответ AI не содержит решения")
-        require(decision.reason.isNotBlank()) { "Ответ AI не содержит объяснения" }
-        require(decision.confidence in 0.0..1.0) { "Уверенность AI вне диапазона от 0 до 1" }
-        return decision
-    }
-
-    private fun extractJsonObject(content: String): String {
-        val startIndex = content.indexOf('{')
-        val endIndex = content.lastIndexOf('}')
-        require(startIndex >= 0 && endIndex > startIndex) {
-            "Ответ AI не содержит завершённый JSON-объект"
-        }
-        return content.substring(startIndex, endIndex + 1)
-    }
 
     /**
      * Возвращает безопасный фрагмент ответа для диагностики несовместимого формата.
      * Полный ответ не логируется, чтобы не раздувать логи и не сохранять лишние данные.
      */
     private fun responseContentPreview(responseBody: String): String = runCatching {
-        objectMapper.readTree(responseBody)
-            .path("candidates")
-            .path(0)
-            .path("content")
-            .path("parts")
-            .path(0)
-            .path("text")
-            .asText()
-    }.getOrDefault(responseBody)
+        decisionParser.finalText(objectMapper.readTree(responseBody))
+    }.getOrDefault("<не удалось разобрать ответ>")
         .replace(Regex("\\s+"), " ")
         .take(RESPONSE_PREVIEW_MAX_LENGTH)
         .ifBlank { "<пусто>" }
 
     /** Возвращает причину завершения ответа Gemini для диагностики обрезанных ответов. */
     private fun responseFinishReason(responseBody: String): String? = runCatching {
-        objectMapper.readTree(responseBody)
-            .path("candidates")
-            .path(0)
-            .path("finish_reason")
-            .asText()
-            .takeIf(String::isNotBlank)
+        decisionParser.finishReason(objectMapper.readTree(responseBody))
     }.getOrNull()
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
