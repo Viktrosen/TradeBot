@@ -1,5 +1,7 @@
 package ru.bolotov.tradebot.service.data
 
+import java.math.BigDecimal
+
 /**
  * Брокерская защита позиции.
  *
@@ -8,5 +10,6 @@ package ru.bolotov.tradebot.service.data
  */
 data class ProtectionOrderPair(
     val stopLossOrderId: String,
+    val stopLossPrice: BigDecimal,
     val takeProfitOrderId: String? = null
 )

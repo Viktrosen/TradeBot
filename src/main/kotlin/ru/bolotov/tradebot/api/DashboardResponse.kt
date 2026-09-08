@@ -22,7 +22,10 @@ data class OpenPositionResponse(
     val entryCommission: BigDecimal,
     val entryTime: String,
     val entryStrategyName: String? = null,
-    val aiExplanation: String? = null
+    val aiExplanation: String? = null,
+    val brokerStopLossPrice: BigDecimal? = null,
+    val managedExitPrice: BigDecimal? = null,
+    val profitProtectionStage: String? = null
 )
 
 data class ClosedTradeResponse(

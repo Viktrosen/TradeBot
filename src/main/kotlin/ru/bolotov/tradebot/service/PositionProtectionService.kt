@@ -8,10 +8,12 @@ import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.PositionProtectionEntity
 import ru.bolotov.tradebot.domain.model.PositionSide
+import ru.bolotov.tradebot.domain.model.ProfitProtectionStage
 import ru.bolotov.tradebot.domain.model.ProtectionUpdateStatus
 import ru.bolotov.tradebot.domain.repository.PositionProtectionRepository
 import ru.bolotov.tradebot.service.data.ProtectionOrderPair
 import ru.bolotov.tradebot.service.data.ProtectionPrices
+import ru.bolotov.tradebot.service.data.ProfitProtectionDecision
 import ru.tinkoff.piapi.contract.v1.Quotation
 import ru.tinkoff.piapi.contract.v1.StopOrder
 import ru.tinkoff.piapi.contract.v1.StopOrderDirection
@@ -35,6 +37,7 @@ class PositionProtectionService(
     private val instrumentsService: InstrumentsServiceSync,
     private val positionProtectionRepository: PositionProtectionRepository,
     private val positionSizingConfig: PositionSizingConfig,
+    private val profitProtectionPolicy: ProfitProtectionPolicy,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
     private val protectionLocks = ConcurrentHashMap.newKeySet<String>()
@@ -140,6 +143,56 @@ class PositionProtectionService(
         positions.forEach { position -> reconcilePositionProtection(accountId, position, snapshot) }
     }
 
+    /**
+     * Обновляет бот-управляемый уровень защиты прибыли. Брокерский SL при этом
+     * не заменяется: он остаётся независимой аварийной защитой на случай сбоя.
+     */
+    fun evaluateProfitProtection(
+        position: OpenPosition,
+        currentPrice: BigDecimal,
+        atr: BigDecimal?
+    ): ProfitProtectionDecision = withPositionLock(position.positionId) {
+        // Re-read state while holding the position lock: overlapping ticks must
+        // never overwrite a more favourable trailing level with an older one.
+        val protection = positionProtectionRepository.findByPositionId(position.positionId)
+            ?: return@withPositionLock ProfitProtectionDecision.NoChange
+        val decision = profitProtectionPolicy.evaluate(
+            position = position,
+            currentPrice = currentPrice,
+            atr = atr,
+            takeProfitPercent = positionSizingConfig.takeProfitPercent,
+            currentExitPrice = protection.managedExitPrice
+        )
+        if (decision !is ProfitProtectionDecision.Updated) return@withPositionLock decision
+
+        val previousStage = protection.profitProtectionStage
+        protection.managedExitPrice = decision.exitPrice
+        protection.profitProtectionStage = decision.stage
+        protection.updatedAt = Instant.now()
+        positionProtectionRepository.save(protection)
+        if (previousStage != decision.stage) {
+            protectionLogger.info {
+                "Сопровождение прибыли ${position.instrumentName}: ${decision.stage}, " +
+                    "уровень выхода=${decision.exitPrice}"
+            }
+        } else {
+            protectionLogger.debug {
+                "Уровень сопровождения прибыли ${position.instrumentName} обновлён: ${decision.exitPrice}"
+            }
+        }
+        decision
+    } ?: ProfitProtectionDecision.NoChange
+
+    /** Возвращает сохранённые уровни защиты для отображения открытых позиций. */
+    fun getProtectionStates(): Map<String, PositionProtectionState> =
+        positionProtectionRepository.findAll().associate { protection ->
+            protection.positionId to PositionProtectionState(
+                brokerStopLossPrice = protection.brokerStopLossPrice,
+                managedExitPrice = protection.managedExitPrice,
+                profitProtectionStage = protection.profitProtectionStage
+            )
+        }
+
     private fun createInitialProtection(
         accountId: String,
         position: OpenPosition,
@@ -148,6 +201,7 @@ class PositionProtectionService(
         val pair = createOrderPair(accountId, position, positionSizingConfig.stopLossPercent, positionSizingConfig.takeProfitPercent)
         val protection = existing ?: PositionProtectionEntity(positionId = position.positionId, instrumentId = position.instrumentId)
         protection.stopLossOrderId = pair.stopLossOrderId
+        protection.brokerStopLossPrice = pair.stopLossPrice
         protection.takeProfitOrderId = pair.takeProfitOrderId
         protection.replacementStopLossOrderId = null
         protection.replacementTakeProfitOrderId = null
@@ -201,6 +255,7 @@ class PositionProtectionService(
         }
 
         current.stopLossOrderId = pair.stopLossOrderId
+        current.brokerStopLossPrice = pair.stopLossPrice
         current.takeProfitOrderId = null
         current.replacementStopLossOrderId = null
         current.replacementTakeProfitOrderId = null
@@ -223,6 +278,7 @@ class PositionProtectionService(
                 positionId = position.positionId,
                 instrumentId = position.instrumentId,
                 stopLossOrderId = pair.stopLossOrderId,
+                brokerStopLossPrice = pair.stopLossPrice,
                 takeProfitOrderId = pair.takeProfitOrderId
             )
         )
@@ -275,7 +331,7 @@ class PositionProtectionService(
     private fun createOrderPair(accountId: String, position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionOrderPair {
         val prices = calculateProtectionPrices(position, stopLossPercent, takeProfitPercent)
         val stopLossOrderId = createStopOrder(accountId, position, prices.stopLossPrice, StopOrderType.STOP_ORDER_TYPE_STOP_LOSS)
-        return ProtectionOrderPair(stopLossOrderId)
+        return ProtectionOrderPair(stopLossOrderId, prices.stopLossPrice)
     }
 
     private fun calculateProtectionPrices(position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionPrices {
@@ -439,3 +495,9 @@ data class BrokerProtectionSnapshot(val ordersById: Map<String, StopOrder>) {
 }
 
 data class TriggeredProtection(val orderId: String, val reason: String, val stopOrder: StopOrder)
+
+data class PositionProtectionState(
+    val brokerStopLossPrice: BigDecimal?,
+    val managedExitPrice: BigDecimal?,
+    val profitProtectionStage: ProfitProtectionStage
+)

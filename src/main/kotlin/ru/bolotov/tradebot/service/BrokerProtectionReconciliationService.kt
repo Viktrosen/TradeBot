@@ -167,7 +167,11 @@ class BrokerProtectionReconciliationService(
         reconcilePositions(selectedAccountId, positions, reason, onPositionClosed)
     }
 
-    private suspend fun reconcilePositions(
+    /**
+     * Reconciles broker position presence and then ensures that every position
+     * still open at the broker has a persisted, active broker stop-loss.
+     */
+    internal suspend fun reconcilePositions(
         accountId: String,
         positions: List<OpenPosition>,
         reason: String,
@@ -223,6 +227,14 @@ class BrokerProtectionReconciliationService(
             portfolioSnapshotService.takeSnapshot(accountId)
             eventPublisherService.publishPositionsChanged()
         }
+
+        // A stop order may have failed to be created during opening or may have
+        // disappeared at the broker after startup. Only positions that are still
+        // present at the broker may receive (or have restored) protection here.
+        val positionsStillOpenAtBroker = activePositions.filter { position ->
+            position.isPresentAtBroker(brokerQuantities[position.instrumentId])
+        }
+        positionProtectionService.reconcileProtection(accountId, positionsStillOpenAtBroker)
         reconciliationLogger.debug { "Сверка защитных заявок завершена: $reason" }
     }
 

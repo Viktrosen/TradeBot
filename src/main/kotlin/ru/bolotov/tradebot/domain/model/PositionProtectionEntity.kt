@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType
 import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
+import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
 
@@ -23,6 +24,16 @@ class PositionProtectionEntity(
 
     @Column(name = "stop_loss_order_id")
     var stopLossOrderId: String? = null,
+
+    @Column(name = "broker_stop_loss_price", precision = 20, scale = 9)
+    var brokerStopLossPrice: BigDecimal? = null,
+
+    @Column(name = "managed_exit_price", precision = 20, scale = 9)
+    var managedExitPrice: BigDecimal? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "profit_protection_stage", nullable = false)
+    var profitProtectionStage: ProfitProtectionStage = ProfitProtectionStage.INACTIVE,
 
     @Column(name = "take_profit_order_id")
     var takeProfitOrderId: String? = null,
@@ -46,4 +57,11 @@ enum class ProtectionUpdateStatus {
     CREATING_REPLACEMENT,
     REPLACEMENT_CREATED,
     CANCELLING_PREVIOUS
+}
+
+/** Состояние управляемого ботом выхода, защищающего уже полученную прибыль. */
+enum class ProfitProtectionStage {
+    INACTIVE,
+    BREAKEVEN,
+    TRAILING
 }

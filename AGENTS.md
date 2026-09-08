@@ -36,6 +36,10 @@ Read the relevant README section before changing any of those contracts.
 
 - A broker stop-loss is created for every confirmed open position. Take-profit is
   monitored by the running bot and is therefore not a broker order.
+- Dynamic profit protection is bot-managed: it may move only toward profit and
+  must persist its stage and exit price. Do not replace the broker SL on every
+  trailing update: broker cancellation and creation are not atomic. The original
+  broker SL remains the hard failure boundary while the bot is running.
 - Risk, manual and emergency exits must not be delayed by AI, strategy filters or
   entry sizing rules.
 - `BUY`/`SELL` are order directions, not position sides. Preserve the explicit
@@ -58,6 +62,9 @@ Read the relevant README section before changing any of those contracts.
 - When changing an internal response, a RabbitMQ payload, strategy identifier or
   position field, inspect both sibling repositories and preserve
   nullable/backward-compatible fields until all consumers are updated.
+- Protection fields exposed for display (`brokerStopLossPrice`,
+  `managedExitPrice`, `profitProtectionStage`) remain nullable and describe
+  executor state; neither gateway nor client may calculate or mutate them.
 - Market regimes are executor-internal inputs to automatic strategy selection.
   Do not add them to HTTP, RabbitMQ or mobile contracts without an explicit
   product decision and a versioned cross-project contract.

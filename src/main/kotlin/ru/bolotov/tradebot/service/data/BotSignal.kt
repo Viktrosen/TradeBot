@@ -27,6 +27,7 @@ sealed class BotSignal {
 
 enum class CloseReason(val eventReason: String) {
     STOP_LOSS("STOP_LOSS"),
+    PROFIT_PROTECTION("PROFIT_PROTECTION"),
     TAKE_PROFIT("TAKE_PROFIT"),
     STRATEGY_SIGNAL("SIGNAL_CLOSE")
 }

@@ -45,6 +45,7 @@ import ru.bolotov.tradebot.service.data.AiFilterResult
 import ru.bolotov.tradebot.service.data.BotSignal
 import ru.bolotov.tradebot.service.data.CloseReason
 import ru.bolotov.tradebot.service.data.ManualCloseResult
+import ru.bolotov.tradebot.service.data.ProfitProtectionDecision
 import ru.tinkoff.piapi.contract.v1.LastPrice
 import ru.tinkoff.piapi.contract.v1.LastPriceInstrument
 import ru.tinkoff.piapi.contract.v1.MarketDataResponse
@@ -245,6 +246,7 @@ class TradingBotService(
     /** Преобразует локальные открытые позиции в ответ внутреннего API. */
     fun getOpenPositions(): List<OpenPositionResponse> {
         val positions = _openPositions.value.values.toList()
+        val protectionStates = positionProtectionService.getProtectionStates()
         val currentPrices = marketDataProvider.getCurrentPrices(
             positions.map(OpenPosition::instrumentId)
         )
@@ -252,14 +254,16 @@ class TradingBotService(
         return positions.map { position ->
             position.toResponse(
                 currentPrice = currentPrices[position.instrumentId],
-                aiExplanation = tradeEventService.findOpenEvent(position.positionId)?.explanation?.aiExplanation()
+                aiExplanation = tradeEventService.findOpenEvent(position.positionId)?.explanation?.aiExplanation(),
+                protectionState = protectionStates[position.positionId]
             )
         }
     }
 
     private fun OpenPosition.toResponse(
         currentPrice: BigDecimal?,
-        aiExplanation: String?
+        aiExplanation: String?,
+        protectionState: PositionProtectionState?
     ): OpenPositionResponse =
         OpenPositionResponse(
             positionId = positionId,
@@ -279,7 +283,13 @@ class TradingBotService(
             entryStrategyName = entryStrategyId
                 ?.let(strategyManager::getStrategyById)
                 ?.name,
-            aiExplanation = aiExplanation
+            aiExplanation = aiExplanation,
+            // Do not present a locally calculated stop as a broker-confirmed order.
+            // Older positions created before protection persistence was introduced may
+            // legitimately have no recorded broker stop price.
+            brokerStopLossPrice = protectionState?.brokerStopLossPrice,
+            managedExitPrice = protectionState?.managedExitPrice,
+            profitProtectionStage = protectionState?.profitProtectionStage?.name
         )
 
     /** Формирует единый снимок dashboard из позиций, журнала сделок и портфельных метрик. */
@@ -692,7 +702,7 @@ class TradingBotService(
     private fun buildSignalFlow(marketData: MarketData) = flow {
         val position = _openPositions.value[marketData.instrumentId]
         val riskCloseReason = position?.let {
-            checkStopLossOrTakeProfit(it, marketData.currentPrice)
+            checkStopLossOrTakeProfit(it, marketData.currentPrice, marketData.atr)
         }
         if (position != null && riskCloseReason != null) {
             emit(BotSignal.Close(position, riskCloseReason))
@@ -1065,17 +1075,28 @@ class TradingBotService(
 
     private fun checkStopLossOrTakeProfit(
         position: OpenPosition,
-        currentPrice: BigDecimal
+        currentPrice: BigDecimal,
+        atr: BigDecimal?
     ): CloseReason? {
         val pnlPercent = when (position.side) {
             PositionSide.LONG -> (currentPrice - position.entryPrice) / position.entryPrice
             PositionSide.SHORT -> (position.entryPrice - currentPrice) / position.entryPrice
         }.toDouble()
 
+        val profitProtectionDecision = positionProtectionService.evaluateProfitProtection(position, currentPrice, atr)
+        if (profitProtectionDecision is ProfitProtectionDecision.Updated) {
+            eventPublisherService.publishPositionsChanged()
+        }
+
         return when {
             pnlPercent <= -positionSizingConfig.stopLossPercent -> {
                 logger.warn { "Стоп-лосс для ${position.instrumentName}: ${"%.2f".format(pnlPercent * 100)}%" }
                 CloseReason.STOP_LOSS
+            }
+
+            profitProtectionDecision is ProfitProtectionDecision.Exit -> {
+                logger.info { "Сопровождение прибыли для ${position.instrumentName}: достигнут уровень выхода" }
+                CloseReason.PROFIT_PROTECTION
             }
 
             pnlPercent >= positionSizingConfig.takeProfitPercent -> {
