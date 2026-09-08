@@ -53,6 +53,9 @@ Read the relevant README section before changing any of those contracts.
   tick.
 - Reconciliation and broker protection paths must remain idempotent. An event may
   arrive more than once or after a restart.
+- Reconciliation may enrich a legacy protection record only from a confirmed
+  active broker stop order. Never infer that price locally or alter the broker
+  order merely to populate display metadata.
 
 ## Contracts with the other repositories
 

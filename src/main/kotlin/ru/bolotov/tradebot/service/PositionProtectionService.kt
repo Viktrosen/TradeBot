@@ -320,11 +320,37 @@ class PositionProtectionService(
             return
         }
         if (!removeLegacyTakeProfit(accountId, position, protection, snapshot.activeOrderIds)) return
+        backfillBrokerStopLossPrice(position, protection, snapshot)
         if (protection.hasActivePairIn(snapshot.activeOrderIds)) return
 
         protectionLogger.warn { "Брокерский стоп-лосс ${position.instrumentName} отсутствует; восстанавливаем защиту" }
         if (cancelProtection(accountId, position.positionId, position.instrumentName)) {
             createProtection(accountId, position)
+        }
+    }
+
+    /**
+     * Enriches an old local protection record from the stop order already returned
+     * by reconciliation. It performs no broker-side mutation and never invents a
+     * price when the broker cannot confirm an active order.
+     */
+    private fun backfillBrokerStopLossPrice(
+        position: OpenPosition,
+        protection: PositionProtectionEntity,
+        snapshot: BrokerProtectionSnapshot
+    ) {
+        if (protection.brokerStopLossPrice != null) return
+        val stopOrderId = protection.stopLossOrderId ?: return
+        val brokerOrder = snapshot.ordersById[stopOrderId]
+            ?.takeIf { it.status == StopOrderStatusOption.STOP_ORDER_STATUS_ACTIVE }
+            ?: return
+
+        protection.brokerStopLossPrice = brokerOrder.stopPrice.toBigDecimal()
+        protection.updatedAt = Instant.now()
+        positionProtectionRepository.save(protection)
+        protectionLogger.info {
+            "Сверка защиты ${position.instrumentName}: сохранена подтверждённая цена брокерского SL=" +
+                protection.brokerStopLossPrice
         }
     }
 
