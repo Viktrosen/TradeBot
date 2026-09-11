@@ -10,6 +10,7 @@ import ru.bolotov.tradebot.domain.model.PositionProtectionEntity
 import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.domain.model.ProfitProtectionStage
 import ru.bolotov.tradebot.domain.model.ProtectionUpdateStatus
+import ru.bolotov.tradebot.domain.model.BotOperationEventType
 import ru.bolotov.tradebot.domain.repository.PositionProtectionRepository
 import ru.bolotov.tradebot.service.data.ProtectionOrderPair
 import ru.bolotov.tradebot.service.data.ProtectionPrices
@@ -38,6 +39,7 @@ class PositionProtectionService(
     private val positionProtectionRepository: PositionProtectionRepository,
     private val positionSizingConfig: PositionSizingConfig,
     private val profitProtectionPolicy: ProfitProtectionPolicy,
+    private val operationJournal: BotOperationJournal,
     @Qualifier("sandboxEnabled") private val sandboxEnabled: Boolean
 ) {
     private val protectionLocks = ConcurrentHashMap.newKeySet<String>()
@@ -171,10 +173,15 @@ class PositionProtectionService(
         protection.updatedAt = Instant.now()
         positionProtectionRepository.save(protection)
         if (previousStage != decision.stage) {
-            protectionLogger.info {
-                "Сопровождение прибыли ${position.instrumentName}: ${decision.stage}, " +
-                    "уровень выхода=${decision.exitPrice}"
-            }
+            operationJournal.info(
+                eventType = BotOperationEventType.PROFIT_PROTECTION_UPDATED,
+                message = "Сопровождение прибыли ${position.instrumentName}: ${decision.stage}, " +
+                    "уровень выхода=${decision.exitPrice}",
+                instrumentId = position.instrumentId,
+                instrumentName = position.instrumentName,
+                positionId = position.positionId,
+                context = mapOf("stage" to decision.stage.name, "exitPrice" to decision.exitPrice)
+            )
         } else {
             protectionLogger.debug {
                 "Уровень сопровождения прибыли ${position.instrumentName} обновлён: ${decision.exitPrice}"
@@ -208,10 +215,16 @@ class PositionProtectionService(
         protection.updateStatus = ProtectionUpdateStatus.ACTIVE
         protection.updatedAt = Instant.now()
         positionProtectionRepository.save(protection)
-        protectionLogger.info {
-            "Создана брокерская защита для ${position.instrumentName}: SL=${pair.stopLossOrderId}; " +
-                "тейк-профит контролируется ботом, чтобы исключить двойное исполнение"
-        }
+        operationJournal.info(
+            eventType = BotOperationEventType.PROTECTION_CREATED,
+            message = "Создана брокерская защита для ${position.instrumentName}; " +
+                "тейк-профит контролируется ботом, чтобы исключить двойное исполнение",
+            instrumentId = position.instrumentId,
+            instrumentName = position.instrumentName,
+            positionId = position.positionId,
+            brokerOrderId = pair.stopLossOrderId,
+            context = mapOf("stopLossPrice" to pair.stopLossPrice)
+        )
         ProtectionCreationResult.Created
     }.getOrElse { error ->
         protectionLogger.error(error) { "Не удалось создать защитные заявки для ${position.instrumentName}" }
@@ -323,7 +336,13 @@ class PositionProtectionService(
         backfillBrokerStopLossPrice(position, protection, snapshot)
         if (protection.hasActivePairIn(snapshot.activeOrderIds)) return
 
-        protectionLogger.warn { "Брокерский стоп-лосс ${position.instrumentName} отсутствует; восстанавливаем защиту" }
+        operationJournal.warn(
+            eventType = BotOperationEventType.PROTECTION_RESTORED,
+            message = "Брокерский стоп-лосс ${position.instrumentName} отсутствует; восстанавливаем защиту",
+            instrumentId = position.instrumentId,
+            instrumentName = position.instrumentName,
+            positionId = position.positionId
+        )
         if (cancelProtection(accountId, position.positionId, position.instrumentName)) {
             createProtection(accountId, position)
         }
@@ -348,10 +367,16 @@ class PositionProtectionService(
         protection.brokerStopLossPrice = brokerOrder.stopPrice.toBigDecimal()
         protection.updatedAt = Instant.now()
         positionProtectionRepository.save(protection)
-        protectionLogger.info {
-            "Сверка защиты ${position.instrumentName}: сохранена подтверждённая цена брокерского SL=" +
-                protection.brokerStopLossPrice
-        }
+        operationJournal.info(
+            eventType = BotOperationEventType.RECONCILIATION,
+            message = "Сверка защиты ${position.instrumentName}: сохранена подтверждённая цена брокерского SL=" +
+                protection.brokerStopLossPrice,
+            instrumentId = position.instrumentId,
+            instrumentName = position.instrumentName,
+            positionId = position.positionId,
+            brokerOrderId = stopOrderId,
+            context = mapOf("stopLossPrice" to protection.brokerStopLossPrice)
+        )
     }
 
     private fun createOrderPair(accountId: String, position: OpenPosition, stopLossPercent: Double, takeProfitPercent: Double): ProtectionOrderPair {

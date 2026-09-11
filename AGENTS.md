@@ -88,6 +88,11 @@ Read the relevant README section before changing any of those contracts.
   externally useful operational events.
 - Per-tick prices, repeated indicator calculations and diagnostic details belong
   to `DEBUG`; never log a `LastPrice` event at `INFO`.
+- `BotOperationJournal` is an asynchronous, bounded audit trail for selected
+  operational events. Use it for AI decisions, risk rejections, order/protection
+  lifecycle and reconciliation; do not feed it ticks, repeated `HOLD` signals,
+  indicators, secrets or complete provider responses. Its database failure must
+  never block or fail a trading operation.
 - Log instrument ticker/name with an identifier where that helps diagnose an
   operation, but never include credentials or complete sensitive payloads.
 

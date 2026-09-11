@@ -30,6 +30,7 @@ import ru.bolotov.tradebot.api.DashboardMetricsResponse
 import ru.bolotov.tradebot.api.DashboardResponse
 import ru.bolotov.tradebot.api.OpenPositionResponse
 import ru.bolotov.tradebot.domain.model.OrderDirection as DomainOrderDirection
+import ru.bolotov.tradebot.domain.model.BotOperationEventType
 import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.strategy.CandlestickPatternStrategy
 import ru.bolotov.tradebot.strategy.MarketData
@@ -85,6 +86,7 @@ class TradingBotService(
     private val positionSizingConfig: PositionSizingConfig,
     private val positionProtectionService: PositionProtectionService,
     private val brokerProtectionReconciliationService: BrokerProtectionReconciliationService,
+    private val operationJournal: BotOperationJournal,
     @Value("\${trading.loop.delay-ms:7200000}") private val loopDelayMs: Long,
     @Value("\${instrument.rescan.interval-ms:7200000}") private val instrumentRescanIntervalMs: Long,
     @Value("\${trading.availability.refresh.interval-ms:60000}")
@@ -1120,8 +1122,13 @@ class TradingBotService(
                         logger.debug { "Планировщик остановлен" }
                         return@launch
                     }
-                    logger.error(e) { "Ошибка в планировщике" }
-                    delay(10000)
+                    operationJournal.error(
+                        eventType = BotOperationEventType.SCHEDULER_FAILURE,
+                        message = "Ошибка в планировщике торгового бота; следующая попытка через 10 секунд",
+                        context = mapOf("retryDelayMs" to SCHEDULER_FAILURE_DELAY_MS),
+                        error = e
+                    )
+                    delay(SCHEDULER_FAILURE_DELAY_MS)
                 }
             }
         }
@@ -1134,7 +1141,12 @@ class TradingBotService(
             val instruments = rescanInstruments()
             logger.info { "Выполнен плановый рескан: выбрано ${instruments.size} инструментов" }
         } catch (error: Exception) {
-            logger.error(error) { "Не удалось выполнить плановый рескан инструментов" }
+            operationJournal.error(
+                eventType = BotOperationEventType.SCHEDULER_FAILURE,
+                message = "Не удалось выполнить плановый рескан инструментов",
+                context = mapOf("operation" to "instrumentRescan"),
+                error = error
+            )
         } finally {
             nextInstrumentRescanAt = Instant.now().plusMillis(instrumentRescanIntervalMs)
         }
@@ -1162,6 +1174,7 @@ class TradingBotService(
 
     private companion object {
         const val MIN_SCHEDULER_DELAY_MS = 1_000L
+        const val SCHEDULER_FAILURE_DELAY_MS = 10_000L
         const val MARKET_DATA_TIMEFRAME_SECONDS = 5L * 60
         val STREAM_RECONNECT_DELAYS_MS = longArrayOf(5_000, 10_000, 30_000, 60_000, 120_000)
     }

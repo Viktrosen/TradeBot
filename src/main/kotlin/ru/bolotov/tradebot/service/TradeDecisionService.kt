@@ -8,6 +8,7 @@ import ru.bolotov.tradebot.service.data.ShortRiskCheck
 import ru.bolotov.tradebot.config.PositionSizingConfig
 import ru.bolotov.tradebot.domain.model.OrderDirection
 import ru.bolotov.tradebot.domain.model.PositionSide
+import ru.bolotov.tradebot.domain.model.BotOperationEventType
 import ru.bolotov.tradebot.strategy.MarketData
 import ru.bolotov.tradebot.strategy.Signal
 import ru.bolotov.tradebot.strategy.regime.MarketRegime
@@ -23,7 +24,8 @@ class TradeDecisionService(
     private val operationsService: ru.ttech.piapi.core.OperationsServiceSync,
     private val positionLifecycleService: PositionLifecycleService,
     private val positionSizingConfig: PositionSizingConfig,
-    private val shortTradingRiskService: ShortTradingRiskService
+    private val shortTradingRiskService: ShortTradingRiskService,
+    private val operationJournal: BotOperationJournal
 ) {
 
     /**
@@ -42,10 +44,14 @@ class TradeDecisionService(
         marketRegime: MarketRegime,
         currentPositions: Map<String, OpenPosition>
     ): TradeDecisionResult {
-        tradeDecisionLogger.info {
-            "Исполнение торгового решения: ${marketData.instrumentName}, " +
-                "сигнал=${signal.direction}, уверенность=${signal.confidence}"
-        }
+        operationJournal.info(
+            eventType = BotOperationEventType.TRADE_DECISION,
+            message = "Исполнение торгового решения: ${marketData.instrumentName}, " +
+                "сигнал=${signal.direction}, уверенность=${signal.confidence}",
+            instrumentId = marketData.instrumentId,
+            instrumentName = marketData.instrumentName,
+            context = mapOf("signal" to signal.direction.name, "confidence" to signal.confidence)
+        )
 
         val signalDirection = signal.toOrderDirection() ?: return TradeDecisionResult()
         val currentPosition = currentPositions[marketData.instrumentId]
@@ -87,9 +93,13 @@ class TradeDecisionService(
         if (side == PositionSide.SHORT) {
             val rejection = shortOpenRejection(accountId, marketData.instrumentId)
             if (rejection != null) {
-                tradeDecisionLogger.warn {
-                    "Шорт ${marketData.instrumentName} пропущен: $rejection"
-                }
+                operationJournal.warn(
+                    eventType = BotOperationEventType.RISK_REJECTION,
+                    message = "Шорт ${marketData.instrumentName} пропущен: $rejection",
+                    instrumentId = marketData.instrumentId,
+                    instrumentName = marketData.instrumentName,
+                    context = mapOf("side" to side.name, "reason" to rejection)
+                )
                 return TradeDecisionResult()
             }
         }
@@ -108,9 +118,12 @@ class TradeDecisionService(
             price = marketData.currentPrice,
             direction = signalDirection.name
         ) ?: run {
-            tradeDecisionLogger.warn {
-                "Лимиты брокера недоступны для ${marketData.instrumentName}; открытие пропущено"
-            }
+            operationJournal.warn(
+                eventType = BotOperationEventType.RISK_REJECTION,
+                message = "Лимиты брокера недоступны для ${marketData.instrumentName}; открытие пропущено",
+                instrumentId = marketData.instrumentId,
+                instrumentName = marketData.instrumentName
+            )
             return TradeDecisionResult()
         }
 

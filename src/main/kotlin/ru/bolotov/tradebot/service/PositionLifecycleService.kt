@@ -8,6 +8,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.springframework.stereotype.Service
 import ru.bolotov.tradebot.domain.model.OrderDirection
+import ru.bolotov.tradebot.domain.model.BotOperationEventType
 import ru.bolotov.tradebot.domain.model.PositionSide
 import ru.bolotov.tradebot.service.data.CloseExecutionTotals
 import ru.bolotov.tradebot.strategy.MarketData
@@ -29,7 +30,8 @@ class PositionLifecycleService(
     private val orderExecutionService: OrderExecutionService,
     private val tradeEventService: TradeEventService,
     private val eventPublisherService: EventPublisherService,
-    private val positionProtectionService: PositionProtectionService
+    private val positionProtectionService: PositionProtectionService,
+    private val operationJournal: BotOperationJournal
 ) {
     private val closingPositionIds = ConcurrentHashMap.newKeySet<String>()
     private val openingInstrumentKeys = ConcurrentHashMap.newKeySet<String>()
@@ -176,6 +178,14 @@ class PositionLifecycleService(
                     "($executedQuantity лотов, ${"%.0f".format(totalValue)} RUB, " +
                     "${"%.1f".format(totalValue * BigDecimal(100) / positionSize.value)}% от рассчитанного размера)"
         }
+        logOrderExecution(
+            operation = "OPEN",
+            position = position,
+            orderId = orderResult.orderId,
+            price = entryPrice,
+            executedLots = executedQuantity,
+            context = mapOf("strategyId" to strategyId, "partiallyFilled" to !fill.filled)
+        )
 
         eventPublisherService.publishTradeExecuted(savedEvent)
         if (!createBrokerProtection(accountId, position)) {
@@ -395,6 +405,16 @@ class PositionLifecycleService(
                 "Защитная заявка брокера исполнилась для ${position.instrumentName}: " +
                     "причина=$reason, цена=$closePrice, комиссия=$closeCommission, P&L=$pnl"
             }
+            if (closeEvent != null) {
+                logOrderExecution(
+                    operation = "BROKER_PROTECTION_CLOSE",
+                    position = position,
+                    orderId = executionOrderId ?: triggeredOrderId,
+                    price = closePrice,
+                    executedLots = executedLots ?: position.quantity,
+                    context = mapOf("reason" to reason, "pnl" to pnl, "executionStatus" to executionStatus)
+                )
+            }
             ClosePositionResult(position, closed = closeEvent != null, removeFromState = true)
         } finally {
             closingPositionIds.remove(position.positionId)
@@ -457,6 +477,16 @@ class PositionLifecycleService(
             val closeEvent = tradeEventService.saveCloseEventOnce(position, executedPrice, pnl, reason)
             positionLifecycleLogger.info {
                 "Позиция закрыта: ${position.direction} ${position.instrumentName}, P&L: $pnl RUB"
+            }
+            if (closeEvent != null) {
+                logOrderExecution(
+                    operation = "CLOSE",
+                    position = position,
+                    orderId = orderResult.orderId,
+                    price = executedPrice,
+                    executedLots = fill.executedLots,
+                    context = mapOf("reason" to reason, "pnl" to pnl, "marketOrder" to marketOrder)
+                )
             }
             closeEvent?.let(eventPublisherService::publishTradeExecuted)
             return ClosePositionResult(position, closed = true, removeFromState = true)
@@ -571,6 +601,16 @@ class PositionLifecycleService(
             explanation = explanation ?: closeExplanation(reason, pnl)
         )
         positionLifecycleLogger.info { "Закрыта позиция: ${position.instrumentName}, P&L: $pnl RUB" }
+        closeEvent?.let {
+            logOrderExecution(
+                operation = "CLOSE",
+                position = position,
+                orderId = null,
+                price = closePrice,
+                executedLots = position.quantity,
+                context = mapOf("reason" to reason, "pnl" to pnl, "marketOrder" to true)
+            )
+        }
         closeEvent?.let(eventPublisherService::publishTradeExecuted)
         closingPositionIds.remove(position.positionId)
         return ClosePositionResult(position, closed = true, removeFromState = true)
@@ -580,6 +620,32 @@ class PositionLifecycleService(
         "STOP_LOSS" -> "Позиция закрыта по стоп-лоссу. Итоговый P&L: $pnl RUB"
         "TAKE_PROFIT" -> "Позиция закрыта по тейк-профиту. Итоговый P&L: $pnl RUB"
         else -> "Закрытие позиции рыночной заявкой ($reason), P&L: $pnl RUB"
+    }
+
+    /** Records a confirmed broker fill; attempted and unfilled orders remain in regular diagnostics. */
+    private fun logOrderExecution(
+        operation: String,
+        position: OpenPosition,
+        orderId: String?,
+        price: BigDecimal,
+        executedLots: Long,
+        context: Map<String, Any?>
+    ) {
+        operationJournal.info(
+            eventType = BotOperationEventType.ORDER_EXECUTION,
+            message = "Исполнена заявка $operation: ${position.side} ${position.instrumentName}, " +
+                "лотов=$executedLots, цена=$price",
+            instrumentId = position.instrumentId,
+            instrumentName = position.instrumentName,
+            positionId = position.positionId,
+            brokerOrderId = orderId,
+            context = context + mapOf(
+                "operation" to operation,
+                "side" to position.side.name,
+                "executedLots" to executedLots,
+                "price" to price
+            )
+        )
     }
 
     private fun buildProtectionExecutionState(

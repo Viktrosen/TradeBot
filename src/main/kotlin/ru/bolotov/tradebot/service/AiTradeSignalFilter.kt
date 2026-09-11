@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import org.springframework.web.client.ResourceAccessException
+import ru.bolotov.tradebot.domain.model.BotOperationEventType
 import ru.bolotov.tradebot.domain.model.PositionSide
 import org.springframework.web.client.RestClient
 import ru.bolotov.tradebot.service.data.AiAction
@@ -31,6 +32,7 @@ private val aiFilterLogger = KotlinLogging.logger {}
 class AiTradeSignalFilter(
     @Qualifier("geminiRestClient") private val restClient: RestClient,
     private val objectMapper: ObjectMapper,
+    private val operationJournal: BotOperationJournal,
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
     @Value("\${ai.gemini.api-key:}") private val apiKey: String,
     @Value("\${ai.gemini.model:gemini-2.0-flash}") private val model: String,
@@ -85,29 +87,55 @@ class AiTradeSignalFilter(
             result
         } catch (_: AiRateLimitException) {
             blockRequestsAfterRateLimit()
+            logFailure(
+                marketData = marketData,
+                signal = signal,
+                message = "AI-фильтр: Gemini ограничил частоту запросов; сигнал отклонён",
+                context = mapOf("provider" to "Gemini", "model" to model, "httpStatus" to HTTP_TOO_MANY_REQUESTS)
+            )
             AiFilterResult(approved = false)
         } catch (error: AiResponseFormatException) {
-            aiFilterLogger.warn(error.cause) {
-                "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
+            logFailure(
+                marketData = marketData,
+                signal = signal,
+                message = "AI-фильтр: Gemini вернул ответ неподдерживаемого формата; сигнал отклонён",
+                consoleMessage = "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
                     "HTTP=${error.statusCode}, провайдер=Gemini, модель=$model, " +
                     "finishReason=${error.finishReason ?: "<не указан>"}, " +
-                    "ответ AI (усечён): ${error.contentPreview}"
-            }
+                    "ответ AI (усечён): ${error.contentPreview}",
+                error = error.cause ?: error,
+                context = mapOf(
+                    "provider" to "Gemini",
+                    "model" to model,
+                    "httpStatus" to error.statusCode,
+                    "finishReason" to error.finishReason
+                )
+            )
             AiFilterResult(approved = false)
         } catch (error: ResourceAccessException) {
             val rootCause = error.mostSpecificCause
-            aiFilterLogger.warn(error) {
-                "AI-фильтр: Gemini недоступен для ${signal.actionDescription} ${marketData.instrumentName}; " +
+            logFailure(
+                marketData = marketData,
+                signal = signal,
+                message = "AI-фильтр: Gemini недоступен; сигнал отклонён",
+                consoleMessage = "AI-фильтр: Gemini недоступен для ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина=${rootCause.javaClass.simpleName}: " +
-                    "${rootCause.message ?: "<не указана>"}; модель=$model"
-            }
+                    "${rootCause.message ?: "<не указана>"}; модель=$model",
+                error = rootCause,
+                context = mapOf("provider" to "Gemini", "model" to model)
+            )
             AiFilterResult(approved = false)
         } catch (error: Exception) {
-            aiFilterLogger.warn(error) {
-                "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
-                    "сигнал отклонён. Причина: ${error.message ?: error.javaClass.simpleName}"
-            }
+            logFailure(
+                marketData = marketData,
+                signal = signal,
+                message = "AI-фильтр: проверка Gemini завершилась ошибкой; сигнал отклонён",
+                consoleMessage = "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
+                    "сигнал отклонён. Причина: ${error.message ?: error.javaClass.simpleName}",
+                error = error,
+                context = mapOf("provider" to "Gemini", "model" to model)
+            )
             AiFilterResult(approved = false)
         }
     }
@@ -241,11 +269,15 @@ class AiTradeSignalFilter(
     }.getOrNull()
 
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
-        aiFilterLogger.info {
-            "AI-фильтр: отправлена проверка ${signal.actionDescription} ${marketData.instrumentName}; " +
+        operationJournal.info(
+            eventType = BotOperationEventType.AI_REQUEST,
+            message = "AI-фильтр: отправлена проверка ${signal.actionDescription} ${marketData.instrumentName}; " +
                 "стратегия=${strategy.name}, цена=${marketData.currentPrice}, " +
-                "уверенность сигнала=${signal.confidence}"
-        }
+                "уверенность сигнала=${signal.confidence}",
+            instrumentId = marketData.instrumentId,
+            instrumentName = marketData.instrumentName,
+            context = mapOf("strategy" to strategy.name, "signal" to signal.direction.name)
+        )
     }
 
     private fun logDecision(
@@ -256,13 +288,42 @@ class AiTradeSignalFilter(
         approved: Boolean,
         durationMs: Long
     ) {
-        aiFilterLogger.info {
-            "AI-фильтр: ${marketData.instrumentName}, сигнал=${signal.direction}, " +
+        operationJournal.info(
+            eventType = BotOperationEventType.AI_DECISION,
+            message = "AI-фильтр: ${marketData.instrumentName}, сигнал=${signal.direction}, " +
                 "решение=${if (approved) "одобрено" else "отклонено"}, " +
                 "ответ=${decision.action.description}, уверенность=${decision.confidence}, " +
-                "минимум=$requiredConfidence, " +
-                "время=${durationMs} мс, причина=${decision.reason}"
-        }
+                "минимум=$requiredConfidence, время=${durationMs} мс, причина=${decision.reason}",
+            instrumentId = marketData.instrumentId,
+            instrumentName = marketData.instrumentName,
+            context = mapOf(
+                "signal" to signal.direction.name,
+                "approved" to approved,
+                "confidence" to decision.confidence,
+                "requiredConfidence" to requiredConfidence,
+                "durationMs" to durationMs
+            )
+        )
+    }
+
+    /** Writes failure metadata without persisting the AI response or prompt. */
+    private fun logFailure(
+        marketData: MarketData,
+        signal: Signal,
+        message: String,
+        consoleMessage: String = message,
+        error: Throwable? = null,
+        context: Map<String, Any?>
+    ) {
+        operationJournal.warn(
+            eventType = BotOperationEventType.AI_FAILURE,
+            message = message,
+            consoleMessage = consoleMessage,
+            instrumentId = marketData.instrumentId,
+            instrumentName = marketData.instrumentName,
+            context = context + mapOf("signal" to signal.direction.name),
+            error = error
+        )
     }
 
     /** Проверяет активную паузу, не сбрасывая ступень backoff до успешного ответа AI. */
