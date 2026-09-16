@@ -84,6 +84,11 @@ Read the relevant README section before changing any of those contracts.
 
 ## Logging
 
+- Candle diagnostics: `GET /internal/diagnostics/candles.csv` is operator-only,
+  uses the existing internal Basic Auth, and exports bounded M5 history through
+  `CandleHistoryReader`. Keep it read-only, separate from trading caches and client
+  contracts. Dates use explicit time zones; output is UTC. Never expose broker tokens.
+
 - `INFO` is for lifecycle, state transitions, completed orders, rescan results and
   externally useful operational events.
 - Per-tick prices, repeated indicator calculations and diagnostic details belong
