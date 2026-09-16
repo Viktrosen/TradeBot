@@ -125,20 +125,17 @@ class PositionLifecycleService(
             return null
         }
 
-        val fill = waitForOpenFill(accountId, marketData, orderResult)
-        val executedQuantity = fill?.executedLots ?: 0L
-        if (fill == null || executedQuantity == 0L) {
-            orderResult.orderId?.let { orderId ->
-                cancelUnfilledOrder(accountId, orderId, marketData.instrumentName)
-            }
-            tradeEventService.markOpenEventFailed(savedEvent, orderResult, fill)
-            return null
-        }
+        val initialFill = waitForOpenFill(accountId, marketData, orderResult)
+        val fill = resolveOpenFillAfterTimeout(
+            accountId = accountId,
+            marketData = marketData,
+            orderResult = orderResult,
+            initialFill = initialFill,
+            pendingEvent = savedEvent
+        ) ?: return null
+        val executedQuantity = fill.executedLots
 
         if (!fill.filled) {
-            orderResult.orderId?.let { orderId ->
-                cancelUnfilledOrder(accountId, orderId, marketData.instrumentName)
-            }
             positionLifecycleLogger.warn {
                 "Заявка на открытие ${marketData.instrumentName} исполнена частично: " +
                     "$executedQuantity из ${positionSize.quantity} лотов"
@@ -242,11 +239,8 @@ class PositionLifecycleService(
         if (!tryMarkPositionClosing(accountId, position, closeDirection)) {
             return ClosePositionResult(position, closed = false, removeFromState = tradeEventService.hasCloseEvent(position.positionId))
         }
-        if (!positionProtectionService.cancelProtection(accountId, position.positionId, position.instrumentName)) {
+        if (!isMarketCloseSafeAfterProtectionCancellation(accountId, position)) {
             closingPositionIds.remove(position.positionId)
-            positionLifecycleLogger.warn {
-                "Закрытие ${position.instrumentName} отложено: защитная пара сейчас изменяется или не отменена"
-            }
             return ClosePositionResult(position, closed = false, removeFromState = false)
         }
 
@@ -421,6 +415,30 @@ class PositionLifecycleService(
         }
     }
 
+    /**
+     * Stops trading a local position whose broker quantity is absent or on the
+     * opposite side. The broker confirms the state mismatch, but not the close
+     * price, so no artificial P&L is stored.
+     */
+    fun recordBrokerReconciliationClose(
+        position: OpenPosition,
+        brokerQuantity: BigDecimal
+    ): ClosePositionResult {
+        val closeEvent = tradeEventService.saveBrokerReconciliationCloseOnce(position, brokerQuantity)
+        if (closeEvent != null) {
+            operationJournal.warn(
+                eventType = BotOperationEventType.RECONCILIATION,
+                message = "Локальная позиция ${position.instrumentName} снята с сопровождения: " +
+                    "количество брокера=$brokerQuantity несовместимо со стороной ${position.side}",
+                instrumentId = position.instrumentId,
+                instrumentName = position.instrumentName,
+                positionId = position.positionId,
+                context = mapOf("brokerQuantity" to brokerQuantity, "side" to position.side.name)
+            )
+        }
+        return ClosePositionResult(position, closed = closeEvent != null, removeFromState = true)
+    }
+
     private suspend fun closePositionAtPrice(
         accountId: String,
         position: OpenPosition,
@@ -432,11 +450,8 @@ class PositionLifecycleService(
         if (!tryMarkPositionClosing(accountId, position, direction)) {
             return ClosePositionResult(position, closed = false, removeFromState = tradeEventService.hasCloseEvent(position.positionId))
         }
-        if (!positionProtectionService.cancelProtection(accountId, position.positionId, position.instrumentName)) {
+        if (!isMarketCloseSafeAfterProtectionCancellation(accountId, position)) {
             closingPositionIds.remove(position.positionId)
-            positionLifecycleLogger.warn {
-                "Закрытие ${position.instrumentName} отложено: защитная пара сейчас изменяется или не отменена"
-            }
             return ClosePositionResult(position, closed = false, removeFromState = false)
         }
 
@@ -525,6 +540,31 @@ class PositionLifecycleService(
         }
 
         return true
+    }
+
+    /**
+     * Prevents a second closing order when the broker stop order is already
+     * executing or its cancellation cannot be confirmed.
+     */
+    private fun isMarketCloseSafeAfterProtectionCancellation(
+        accountId: String,
+        position: OpenPosition
+    ): Boolean = when (val result = positionProtectionService.cancelProtectionForMarketClose(accountId, position)) {
+        ProtectionCancellationResult.Cancelled -> true
+        is ProtectionCancellationResult.Triggered -> {
+            positionLifecycleLogger.warn {
+                "Закрытие ${position.instrumentName} отложено: брокерская защита уже исполнена " +
+                    "или исполняется (${result.protection.orderId})"
+            }
+            false
+        }
+        is ProtectionCancellationResult.Unconfirmed -> {
+            positionLifecycleLogger.warn {
+                "Закрытие ${position.instrumentName} отложено: не подтверждена отмена брокерской защиты: " +
+                    result.reason
+            }
+            false
+        }
     }
 
     private suspend fun waitForCloseFill(
@@ -681,6 +721,47 @@ class PositionLifecycleService(
             }
         }
         return fill
+    }
+
+    /**
+     * Resolves an opening after its initial wait. A timeout is not an execution
+     * result: after cancellation we must read the broker state once more before
+     * marking the event as failed or creating a position from a partial fill.
+     */
+    private suspend fun resolveOpenFillAfterTimeout(
+        accountId: String,
+        marketData: MarketData,
+        orderResult: OrderResult,
+        initialFill: OrderFillResult?,
+        pendingEvent: ru.bolotov.tradebot.domain.model.TradeEvent
+    ): OrderFillResult? {
+        if (initialFill == null) {
+            tradeEventService.markOpenEventFailed(pendingEvent, orderResult)
+            return null
+        }
+        if (initialFill.filled) return initialFill
+
+        val orderId = orderResult.orderId
+        if (orderId.isNullOrBlank()) {
+            tradeEventService.markOpenEventFailed(pendingEvent, orderResult, initialFill)
+            return null
+        }
+
+        cancelUnfilledOrder(accountId, orderId, marketData.instrumentName)
+        val finalFill = orderExecutionService.readOrderFill(accountId, orderId)
+        if (finalFill.filled || finalFill.executedLots > 0L) return finalFill
+
+        if (orderExecutionService.isTerminalUnfilled(finalFill)) {
+            tradeEventService.markOpenEventFailed(pendingEvent, orderResult, finalFill)
+            return null
+        }
+
+        tradeEventService.markOpenEventAwaitingReconciliation(pendingEvent, orderResult, finalFill)
+        positionLifecycleLogger.warn {
+            "Открытие ${marketData.instrumentName} ожидает сверки с брокером: " +
+                "orderId=$orderId, status=${finalFill.executionStatus}"
+        }
+        return null
     }
 
     private fun cancelUnfilledOrder(accountId: String, orderId: String, instrumentName: String) {

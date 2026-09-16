@@ -70,6 +70,50 @@ class TradeEventService(
             EventType.OPEN
         )?.positionId
 
+    /**
+     * Finds an opening which may safely be reconciled with an actual broker
+     * holding. A generic failed order is deliberately excluded; only a pending
+     * order or one for which the broker already reported FILL is recoverable.
+     */
+    fun findRestorableOpenPositionId(instrumentId: String, direction: OrderDirection): String? =
+        tradeEventRepository.findByInstrumentId(instrumentId)
+            .asSequence()
+            .filter { it.eventType == EventType.OPEN && it.direction == direction && it.positionId != null }
+            .filter { event ->
+                event.status == EventStatus.PROCESSED ||
+                    event.status == EventStatus.PENDING ||
+                    (event.status == EventStatus.FAILED &&
+                        event.executionStatus == "EXECUTION_REPORT_STATUS_FILL")
+            }
+            .filterNot { event -> hasCloseEvent(requireNotNull(event.positionId)) }
+            .maxByOrNull(TradeEvent::createdAt)
+            ?.positionId
+
+    /** Marks a previously uncertain opening as processed using confirmed portfolio data. */
+    fun reconcileOpenEventFromBroker(
+        positionId: String,
+        entryPrice: BigDecimal,
+        quantity: Long,
+        lotSize: Int
+    ) {
+        val event = findOpenEvent(positionId) ?: return
+        if (event.status == EventStatus.PROCESSED) return
+
+        event.status = EventStatus.PROCESSED
+        event.processedAt = Instant.now()
+        event.price = entryPrice
+        event.quantity = quantity
+        event.lotSize = lotSize
+        event.totalValue = entryPrice * quantity.toBigDecimal() * lotSize.toBigDecimal()
+        event.executionStatus = "RECONCILED_BROKER_POSITION"
+        event.errorMessage = null
+        tradeEventRepository.save(event)
+        tradeEventLogger.warn {
+            "OPEN-событие восстановлено по подтверждённой позиции брокера: " +
+                "${event.instrumentName}, positionId=$positionId"
+        }
+    }
+
     fun createPendingOpenEvent(
         positionId: String,
         marketData: MarketData,
@@ -132,6 +176,46 @@ class TradeEventService(
             ?: "Заявка на открытие не была исполнена до таймаута или была отклонена"
         event.processedAt = Instant.now()
         tradeEventRepository.save(event)
+    }
+
+    /** Keeps an opening visible for later broker reconciliation instead of misclassifying it as failed. */
+    fun markOpenEventAwaitingReconciliation(event: TradeEvent, orderResult: OrderResult, fill: OrderFillResult) {
+        event.status = EventStatus.PENDING
+        event.brokerOrderId = orderResult.orderId
+        event.executionStatus = fill.executionStatus
+        event.brokerOrderState = fill.brokerOrderState
+        event.errorMessage = "Ожидается сверка с брокером: ${fill.errorMessage ?: fill.executionStatus ?: "неизвестный статус"}"
+        event.processedAt = null
+        tradeEventRepository.save(event)
+    }
+
+    /**
+     * Persists the fact that the local position must no longer be traded. Its
+     * broker closing price is unknown, therefore P&L intentionally remains null.
+     */
+    fun saveBrokerReconciliationCloseOnce(position: OpenPosition, brokerQuantity: BigDecimal): TradeEvent? {
+        if (hasCloseEvent(position.positionId)) return null
+        return tradeEventRepository.save(
+            TradeEvent(
+                instrumentId = position.instrumentId,
+                instrumentName = position.instrumentName,
+                direction = position.direction,
+                positionSide = position.side,
+                price = position.entryPrice,
+                quantity = position.quantity,
+                lotSize = position.lotSize,
+                totalValue = position.entryPrice * position.quantity.toBigDecimal() * position.lotSize.toBigDecimal(),
+                reason = "BROKER_POSITION_RECONCILIATION",
+                explanation = "Локальная позиция снята с сопровождения: брокер сообщает количество " +
+                    "$brokerQuantity, несовместимое со стороной ${position.side}. Цена закрытия и P&L не определены.",
+                pnl = null,
+                eventType = EventType.CLOSE,
+                positionId = position.positionId,
+                status = EventStatus.PROCESSED,
+                processedAt = Instant.now(),
+                executionStatus = "BROKER_POSITION_MISMATCH"
+            )
+        )
     }
 
     fun saveCloseEventOnce(

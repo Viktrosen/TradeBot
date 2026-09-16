@@ -53,6 +53,18 @@ Read the relevant README section before changing any of those contracts.
   tick.
 - Reconciliation and broker protection paths must remain idempotent. An event may
   arrive more than once or after a restart.
+- A cancellation acknowledgement for a broker SL is not proof that it did not
+  execute. Before a bot-managed market close, read the final stop-order state;
+  if it is executed, active or unknown, do not submit a second closing order.
+- An opening timeout is an unresolved broker state, not an automatic failure.
+  Mark it pending until a confirmed terminal cancellation or portfolio/order
+  reconciliation resolves it. A broker-confirmed late fill must be restored,
+  protected and persisted as the original bot position.
+- Never adopt an external broker holding into `_openPositions` with a generated
+  position id. A local position absent at the broker, or present on the opposite
+  side, must be durably removed from trading with an explicit reconciliation
+  event and no invented P&L. Do not blindly cancel a broker SL for an unknown
+  position: it may be the last protection of a real broker holding.
 - Reconciliation may enrich a legacy protection record only from a confirmed
   active broker stop order. Never infer that price locally or alter the broker
   order merely to populate display metadata.

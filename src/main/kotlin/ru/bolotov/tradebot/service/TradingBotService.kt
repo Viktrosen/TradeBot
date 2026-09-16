@@ -516,6 +516,9 @@ class TradingBotService(
         val result = brokerPortfolioSyncService.restorePositions(accountId)
         val persistedOpenPositions = tradeEventService.findUnclosedPositions()
             .associateBy(OpenPosition::instrumentId)
+        // Keep persisted candidates only for the first reconciliation. The
+        // reconciliation writes a durable close for a broker-absent position;
+        // broker-confirmed positions always replace the local candidate.
         _openPositions.value = persistedOpenPositions + result.positions
         _activeInstruments.value = (
             _activeInstruments.value +
@@ -541,6 +544,14 @@ class TradingBotService(
         brokerProtectionReconciliationService.start(
             accountId = selectedAccountId,
             positionsProvider = { _openPositions.value.values },
+            onPositionsRestored = { restoredPositions ->
+                val tracked = restoredPositions.associateBy(OpenPosition::instrumentId)
+                if (tracked.isNotEmpty()) {
+                    _openPositions.value += tracked
+                    _activeInstruments.value = (_activeInstruments.value + tracked.keys).distinct()
+                    eventPublisherService.publishPositionsChanged()
+                }
+            },
             onPositionClosed = { position ->
                 _openPositions.value = _openPositions.value - position.instrumentId
                 registerReentryCooldown(position.instrumentId)
@@ -737,6 +748,14 @@ class TradingBotService(
                 return@flow
             }
 
+            if (brokerPortfolioSyncService.hasUntrackedBrokerPosition(accountId, strategyMarketData.instrumentId)) {
+                logger.error {
+                    "Открытие позиции ${strategyMarketData.instrumentName} пропущено: " +
+                        "у брокера есть неподтверждённая локальным журналом позиция"
+                }
+                return@flow
+            }
+
             emitOpenSignalIfApproved(strategyMarketData, signal, selection, regimeDecision, null)
             return@flow
         }
@@ -757,6 +776,13 @@ class TradingBotService(
             return@flow
         }
         if (currentPosition == null) {
+            if (brokerPortfolioSyncService.hasUntrackedBrokerPosition(accountId, strategyMarketData.instrumentId)) {
+                logger.error {
+                    "Открытие позиции ${strategyMarketData.instrumentName} пропущено: " +
+                        "у брокера есть неподтверждённая локальным журналом позиция"
+                }
+                return@flow
+            }
             emitOpenSignalIfApproved(strategyMarketData, signal, selection, regimeDecision, null)
         }
     }
@@ -1012,6 +1038,9 @@ class TradingBotService(
         result.closedInstrumentId?.let { instrumentId ->
             _openPositions.value -= instrumentId
         }
+        // Includes a timed-out opening retained as PENDING. The reconciliation
+        // is the authority that can discover a late broker fill safely.
+        brokerProtectionReconciliationService.requestReconciliation("исполнение торгового сигнала")
         if (result.openedPosition != null || result.closedInstrumentId != null) {
             refreshPortfolioAfterTrade(currentAccountId)
             eventPublisherService.publishPositionsChanged()

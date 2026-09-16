@@ -49,6 +49,7 @@ class BrokerProtectionReconciliationService(
 
     private var accountId: String? = null
     private var positionsProvider: (() -> Collection<OpenPosition>)? = null
+    private var onPositionsRestored: (suspend (Collection<OpenPosition>) -> Unit)? = null
     private var onPositionClosed: (suspend (OpenPosition) -> Unit)? = null
     private var streamJob: Job? = null
     private var periodicJob: Job? = null
@@ -58,6 +59,7 @@ class BrokerProtectionReconciliationService(
     fun start(
         accountId: String,
         positionsProvider: () -> Collection<OpenPosition>,
+        onPositionsRestored: suspend (Collection<OpenPosition>) -> Unit,
         onPositionClosed: suspend (OpenPosition) -> Unit
     ) {
         if (sandboxEnabled) return
@@ -66,6 +68,7 @@ class BrokerProtectionReconciliationService(
         started.set(true)
         this.accountId = accountId
         this.positionsProvider = positionsProvider
+        this.onPositionsRestored = onPositionsRestored
         this.onPositionClosed = onPositionClosed
         subscribeToTrades(accountId)
         startPeriodicReconciliation()
@@ -161,7 +164,12 @@ class BrokerProtectionReconciliationService(
 
     private suspend fun reconcile(reason: String) {
         val selectedAccountId = accountId ?: return
-        val positions = currentPositions().toList()
+        val restoredPositions = brokerPortfolioSyncService.restorePositions(selectedAccountId).positions.values
+        if (restoredPositions.isNotEmpty()) {
+            onPositionsRestored?.invoke(restoredPositions)
+        }
+        val positions = (currentPositions().associateBy(OpenPosition::instrumentId) +
+            restoredPositions.associateBy(OpenPosition::instrumentId)).values.toList()
         if (positions.isEmpty()) return
 
         reconcilePositions(selectedAccountId, positions, reason, onPositionClosed)
@@ -177,7 +185,16 @@ class BrokerProtectionReconciliationService(
         reason: String,
         onClosed: (suspend (OpenPosition) -> Unit)?
     ) {
-        val activePositions = closeShortsWithUnsafeMargin(accountId, positions, onClosed)
+        val untrackedPositions = positions.filterNot(brokerPortfolioSyncService::isBotTrackedPosition)
+        untrackedPositions.forEach { position ->
+            reconciliationLogger.error {
+                "КРИТИЧЕСКОЕ расхождение: ${position.instrumentName} исключена из торгового состояния, " +
+                    "поскольку positionId=${position.positionId} не подтверждён журналом TradeBot"
+            }
+            onClosed?.invoke(position)
+        }
+        val trackedPositions = positions - untrackedPositions.toSet()
+        val activePositions = closeShortsWithUnsafeMargin(accountId, trackedPositions, onClosed)
         if (activePositions.isEmpty()) return
 
         val brokerQuantities = brokerPortfolioSyncService.getBrokerPositionQuantities(accountId)
@@ -197,8 +214,12 @@ class BrokerProtectionReconciliationService(
             }
             val triggered = positionProtectionService.findTriggeredProtection(position, snapshot)
             if (triggered == null) {
-                reconciliationLogger.warn {
-                    "Позиция ${position.instrumentName} отсутствует у брокера, но исполненная защитная заявка не найдена"
+                val reconciliationClose = positionLifecycleService.recordBrokerReconciliationClose(
+                    position = position,
+                    brokerQuantity = brokerQuantity
+                )
+                if (reconciliationClose.removeFromState) {
+                    onClosed?.invoke(position)
                 }
                 return@forEach
             }

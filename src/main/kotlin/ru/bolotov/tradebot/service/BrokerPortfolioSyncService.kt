@@ -41,60 +41,47 @@ class BrokerPortfolioSyncService(
         portfolioSyncLogger.error(error) { "Не удалось получить пакетное состояние портфеля брокера" }
     }.getOrThrow()
 
-    /** Находит LONG у брокера для SELL-сигнала, если локальное состояние ещё не содержит позицию. */
+    /** Verifies that an in-memory position is backed by a restorable bot OPEN event. */
+    fun isBotTrackedPosition(position: OpenPosition): Boolean =
+        tradeEventService.findRestorableOpenPositionId(position.instrumentId, position.direction) == position.positionId
+
+    /**
+     * Checks for an untracked broker holding before a new signal opens a
+     * position. On an unavailable portfolio response the answer is true: it is
+     * safer to defer an order than to change an unknown holding.
+     */
+    fun hasUntrackedBrokerPosition(accountId: String?, instrumentId: String): Boolean {
+        if (accountId.isNullOrBlank()) return true
+        return runCatching {
+            brokerPositions(accountId).any { it.instrumentId == instrumentId && it.quantity != BigDecimal.ZERO }
+        }.onFailure { error ->
+            portfolioSyncLogger.error(error) { "Не удалось проверить портфель перед открытием позиции: $instrumentId" }
+        }.getOrDefault(true)
+    }
+
+    /**
+     * Returns an already tracked long position for a SELL signal. External
+     * broker inventory must never be adopted into the bot with a random local
+     * position id: otherwise a later close can become an unintended trade.
+     */
     fun synchronizeLongPositionForSell(
         accountId: String?,
         marketData: MarketData,
         existingPosition: OpenPosition?
     ): OpenPosition? {
         if (existingPosition?.direction == OrderDirection.BUY) return existingPosition
-        if (accountId == null) {
-            portfolioSyncLogger.warn {
-                "Не удалось проверить позицию ${marketData.instrumentName}: брокерский счёт не выбран"
+        if (existingPosition == null) {
+            portfolioSyncLogger.error {
+                "SELL ${marketData.instrumentName} не будет сопровождать внешнюю позицию брокера: " +
+                    "локальная позиция TradeBot отсутствует"
             }
             return null
         }
-
-        return try {
-            val brokerPosition = brokerPositions(accountId)
-                .firstOrNull { it.instrumentId == marketData.instrumentId }
-
-            if (brokerPosition == null || brokerPosition.quantity <= BigDecimal.ZERO) {
-                portfolioSyncLogger.info {
-                    "Для SELL ${marketData.instrumentName} не найдена длинная позиция в портфеле; " +
-                        "сигнал может быть рассмотрен как открытие шорта"
-                }
-                return null
-            }
-
-            val quantityLots = brokerUnitsToLots(brokerPosition.quantity, marketData.lotSize)
-            if (quantityLots <= 0) {
-                portfolioSyncLogger.warn {
-                    "Сигнал SELL для ${marketData.instrumentName} отклонён: количество позиции меньше одного лота"
-                }
-                return null
-            }
-
-            OpenPosition(
-                instrumentId = marketData.instrumentId,
-                instrumentName = marketData.instrumentName,
-                direction = OrderDirection.BUY,
-                entryPrice = brokerPosition.averagePositionPrice
-                    .takeIf { it > BigDecimal.ZERO } ?: marketData.currentPrice,
-                quantity = quantityLots,
-                lotSize = marketData.lotSize,
-                entryTime = Instant.now()
-            ).also {
-                portfolioSyncLogger.info {
-                    "Позиция ${marketData.instrumentName} синхронизирована с портфелем для исполнения SELL"
-                }
-            }
-        } catch (e: Exception) {
-            portfolioSyncLogger.error(e) {
-                "Не удалось проверить позицию в портфеле для SELL ${marketData.instrumentName}"
-            }
-            null
+        portfolioSyncLogger.error {
+            "SELL ${marketData.instrumentName} пропущен: локальная сторона ${existingPosition.side} " +
+                "не согласована с ожидаемым LONG"
         }
+        return null
     }
 
     /** Восстанавливает только распознанные позиции бота и не принимает внешние шорты за свои. */
@@ -187,6 +174,13 @@ class BrokerPortfolioSyncService(
                         atr = atr
                     )
 
+                    tradeEventService.reconcileOpenEventFromBroker(
+                        positionId = positionId,
+                        entryPrice = avgPrice,
+                        quantity = quantityLots,
+                        lotSize = lotSize
+                    )
+
                     restoredPositions[instrumentUid] = restoredPosition
                     portfolioSyncLogger.info {
                         "Восстановлена позиция: ${restoredPosition.direction} ${restoredPosition.instrumentName} " +
@@ -256,7 +250,7 @@ class BrokerPortfolioSyncService(
             }
             return null
         }
-        if (tradeEventService.findLastOpenPositionId(instrumentId, OrderDirection.SELL) == null) {
+        if (tradeEventService.findRestorableOpenPositionId(instrumentId, OrderDirection.SELL) == null) {
             portfolioSyncLogger.error {
                 "Короткая позиция $instrumentName (${quantity.abs()} ед.) не восстановлена: " +
                     "для неё нет OPEN-события бота. Это защита от принятия внешней позиции за позицию бота."
@@ -271,7 +265,7 @@ class BrokerPortfolioSyncService(
         side: PositionSide
     ): String? {
         val direction = side.openDirection()
-        val positionId = tradeEventService.findLastOpenPositionId(instrumentId, direction)
+        val positionId = tradeEventService.findRestorableOpenPositionId(instrumentId, direction)
         if (positionId != null) return positionId
 
         if (side == PositionSide.LONG) {

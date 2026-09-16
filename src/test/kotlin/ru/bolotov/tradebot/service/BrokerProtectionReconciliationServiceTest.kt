@@ -1,6 +1,7 @@
 package ru.bolotov.tradebot.service
 
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
@@ -19,6 +20,7 @@ class BrokerProtectionReconciliationServiceTest {
         val portfolioSync = mock<BrokerPortfolioSyncService>()
         val protectionService = mock<PositionProtectionService>()
         val position = openLongPosition()
+        `when`(portfolioSync.isBotTrackedPosition(position)).thenReturn(true)
         `when`(portfolioSync.getBrokerPositionQuantities("account"))
             .thenReturn(mapOf(position.instrumentId to BigDecimal.ONE))
         `when`(protectionService.loadBrokerSnapshot("account"))
@@ -34,14 +36,60 @@ class BrokerProtectionReconciliationServiceTest {
         verify(protectionService).reconcileProtection("account", listOf(position))
     }
 
+    @Test
+    fun `reconciliation removes broker-absent tracked position without inventing pnl`() = runBlocking {
+        val portfolioSync = mock<BrokerPortfolioSyncService>()
+        val protectionService = mock<PositionProtectionService>()
+        val lifecycleService = mock<PositionLifecycleService>()
+        val position = openLongPosition()
+        var removedPosition: OpenPosition? = null
+        `when`(portfolioSync.isBotTrackedPosition(position)).thenReturn(true)
+        `when`(portfolioSync.getBrokerPositionQuantities("account")).thenReturn(emptyMap())
+        `when`(protectionService.loadBrokerSnapshot("account"))
+            .thenReturn(BrokerProtectionSnapshot.empty())
+        `when`(protectionService.findTriggeredProtection(position, BrokerProtectionSnapshot.empty()))
+            .thenReturn(null)
+        `when`(lifecycleService.recordBrokerReconciliationClose(position, BigDecimal.ZERO))
+            .thenReturn(ClosePositionResult(position, closed = true, removeFromState = true))
+
+        reconciliationService(portfolioSync, protectionService, lifecycleService).reconcilePositions(
+            accountId = "account",
+            positions = listOf(position),
+            reason = "периодическая сверка",
+            onClosed = { removedPosition = it }
+        )
+
+        verify(lifecycleService).recordBrokerReconciliationClose(position, BigDecimal.ZERO)
+        assertEquals(position, removedPosition)
+    }
+
+    @Test
+    fun `reconciliation removes untracked in-memory position even when broker has it`() = runBlocking {
+        val portfolioSync = mock<BrokerPortfolioSyncService>()
+        val protectionService = mock<PositionProtectionService>()
+        val position = openLongPosition()
+        var removedPosition: OpenPosition? = null
+        `when`(portfolioSync.isBotTrackedPosition(position)).thenReturn(false)
+
+        reconciliationService(portfolioSync, protectionService).reconcilePositions(
+            accountId = "account",
+            positions = listOf(position),
+            reason = "периодическая сверка",
+            onClosed = { removedPosition = it }
+        )
+
+        assertEquals(position, removedPosition)
+    }
+
     private fun reconciliationService(
         portfolioSync: BrokerPortfolioSyncService,
-        protectionService: PositionProtectionService
+        protectionService: PositionProtectionService,
+        lifecycleService: PositionLifecycleService = mock<PositionLifecycleService>()
     ) = BrokerProtectionReconciliationService(
         investApi = mock<InvestApi>(),
         brokerPortfolioSyncService = portfolioSync,
         positionProtectionService = protectionService,
-        positionLifecycleService = mock<PositionLifecycleService>(),
+        positionLifecycleService = lifecycleService,
         orderExecutionService = mock<OrderExecutionService>(),
         usersService = mock<UsersServiceSync>(),
         portfolioSnapshotService = mock<PortfolioSnapshotService>(),

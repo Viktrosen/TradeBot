@@ -83,6 +83,50 @@ class PositionProtectionService(
         } ?: false
     }
 
+    /**
+     * Cancels protection before a bot-managed market close and verifies the final
+     * broker state. A successful cancellation request alone is not sufficient:
+     * the stop order may have become executable concurrently.
+     */
+    fun cancelProtectionForMarketClose(
+        accountId: String,
+        position: OpenPosition
+    ): ProtectionCancellationResult {
+        if (sandboxEnabled) return ProtectionCancellationResult.Cancelled
+
+        return withPositionLock(position.positionId) {
+            val protection = positionProtectionRepository.findByPositionId(position.positionId)
+                ?: return@withPositionLock ProtectionCancellationResult.Cancelled
+            val initialSnapshot = loadBrokerSnapshot(accountId)
+                ?: return@withPositionLock ProtectionCancellationResult.Unconfirmed(
+                    "Не удалось получить начальный статус защитной заявки"
+                )
+            findTriggeredProtection(position, initialSnapshot)?.let { triggered ->
+                return@withPositionLock ProtectionCancellationResult.Triggered(triggered)
+            }
+
+            protection.allOrderIds
+                .filter { it in initialSnapshot.activeOrderIds }
+                .forEach { orderId -> cancelStopOrder(accountId, orderId, position.instrumentName) }
+
+            val finalSnapshot = loadBrokerSnapshot(accountId)
+                ?: return@withPositionLock ProtectionCancellationResult.Unconfirmed(
+                    "Не удалось подтвердить отмену защитной заявки"
+                )
+            findTriggeredProtection(position, finalSnapshot)?.let { triggered ->
+                return@withPositionLock ProtectionCancellationResult.Triggered(triggered)
+            }
+            if (protection.allOrderIds.any { it in finalSnapshot.activeOrderIds }) {
+                return@withPositionLock ProtectionCancellationResult.Unconfirmed(
+                    "Защитная заявка всё ещё активна у брокера"
+                )
+            }
+
+            positionProtectionRepository.delete(protection)
+            ProtectionCancellationResult.Cancelled
+        } ?: ProtectionCancellationResult.Unconfirmed("Защита позиции уже изменяется")
+    }
+
     /** Завершает учёт исполненной защиты и отменяет вторую заявку пары. */
     fun completeTriggeredProtection(
         accountId: String,
@@ -136,12 +180,9 @@ class PositionProtectionService(
         if (sandboxEnabled) return
 
         val snapshot = loadBrokerSnapshot(accountId) ?: return
-        val openPositions = positions.associateBy(OpenPosition::positionId)
-        positionProtectionRepository.findAll().forEach { protection ->
-            if (protection.positionId !in openPositions) {
-                cancelProtection(accountId, protection.positionId, protection.instrumentId)
-            }
-        }
+        // A missing in-memory position can be a reconciliation failure or an
+        // externally held position. Do not cancel its broker SL blindly: that
+        // would remove the only hard protection from a real broker position.
         positions.forEach { position -> reconcilePositionProtection(accountId, position, snapshot) }
     }
 
@@ -522,6 +563,12 @@ class PositionProtectionService(
         val nano = remainder(BigDecimal.ONE).movePointRight(9).setScale(0, RoundingMode.HALF_UP).toInt()
         return Quotation.newBuilder().setUnits(units).setNano(nano).build()
     }
+}
+
+sealed interface ProtectionCancellationResult {
+    data object Cancelled : ProtectionCancellationResult
+    data class Triggered(val protection: TriggeredProtection) : ProtectionCancellationResult
+    data class Unconfirmed(val reason: String) : ProtectionCancellationResult
 }
 
 sealed interface ProtectionCreationResult {

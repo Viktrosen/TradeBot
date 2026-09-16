@@ -270,6 +270,14 @@ class OrderExecutionService(
         false
     }
 
+    /** Reads the latest broker state once after an order cancellation attempt. */
+    suspend fun readOrderFill(accountId: String, orderId: String): OrderFillResult =
+        waitForOrderFill(accountId, orderId, maxAttempts = 1, delayMs = 0)
+
+    /** True only for a broker-confirmed terminal result that contains no fills. */
+    fun isTerminalUnfilled(fill: OrderFillResult): Boolean =
+        fill.executionStatus in terminalUnfilledStatusNames && fill.executedLots == 0L
+
     /** Возвращает результат исполнения заявки для сверки после торговой операции. */
     fun getExecutedOrder(accountId: String, orderId: String): BrokerOrderExecution? = runCatching {
         val state = ordersService.getOrderStateSync(accountId, orderId)
@@ -319,6 +327,8 @@ class OrderExecutionService(
             OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_REJECTED,
             OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_CANCELLED
         )
+
+        private val terminalUnfilledStatusNames = terminalUnfilledStatuses.mapTo(mutableSetOf()) { it.name }
     }
 }
 
