@@ -37,6 +37,11 @@ class MarketRegimeStrategySelector(
         currentRegime: MarketRegime
     ): StrategySelection? {
         val strategyId = entryStrategyId ?: return selectForNewPosition(currentRegime)
+        // While SuperTrend is under replay validation, existing positions stay
+        // protected by the normal risk exits only. A rewritten strategy must not
+        // create a new discretionary reversal close for a position opened by the
+        // former stateful implementation.
+        if (strategyId == SUPER_TREND_ID) return null
         val strategy = strategyManager.getStrategyById(strategyId) ?: run {
             return selectForNewPosition(currentRegime)
         }
@@ -44,6 +49,8 @@ class MarketRegimeStrategySelector(
     }
 
     private companion object {
+        const val SUPER_TREND_ID = "supertrend"
+
         val STRATEGY_BY_REGIME = mapOf(
             // Существующие
             MarketRegime.STRONG_UPTREND to "ema",
@@ -53,7 +60,9 @@ class MarketRegimeStrategySelector(
             MarketRegime.UNCERTAIN to null,
 
             // НОВЫЕ
-            MarketRegime.WEAK_TREND to "supertrend",
+            // SuperTrend remains available for deterministic replay, but its
+            // historical result is insufficient for automatic new entries.
+            MarketRegime.WEAK_TREND to null,
             MarketRegime.FLAT_LOW_VOL to "candlestick",
             MarketRegime.FLAT_HIGH_VOL to "vwap",
             MarketRegime.EXTREME_VOLATILE to null  // Нет входов — защита

@@ -91,6 +91,7 @@ class MarketDataProvider(
                 spread = BigDecimal.valueOf(0.1),
                 volatility = indicators.volatility,
                 strategyCandleKey = indicators.strategyCandleKey,
+                closedCandles = history.candles.map(::toStrategyCandle),
                 // НОВОЕ: для Choppiness Index и ADX
                 high14 = indicators.high14,
                 low14 = indicators.low14,
@@ -496,6 +497,16 @@ class MarketDataProvider(
 
     private fun strategyCandleKey(candle: HistoricCandle): String =
         "M5:${candle.time.seconds}:${candle.time.nanos}"
+
+    private fun toStrategyCandle(candle: HistoricCandle): StrategyCandle = StrategyCandle(
+        key = strategyCandleKey(candle),
+        time = candleStart(candle),
+        open = candle.open.toBigDecimal(),
+        high = candle.high.toBigDecimal(),
+        low = candle.low.toBigDecimal(),
+        close = candle.close.toBigDecimal(),
+        volume = candle.volume
+    )
 
     private fun formatIndicator(value: BigDecimal?): String = value
         ?.setScale(4, RoundingMode.HALF_UP)

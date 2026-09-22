@@ -48,6 +48,9 @@ Read the relevant README section before changing any of those contracts.
   margin and broker-limit checks. Never weaken them as a side effect of a feature.
 - Market-regime changes are based on closed M5 candles. Do not recalculate a
   candle-only strategy on every price tick.
+- A candle strategy must be deterministic from its supplied closed OHLCV
+  sequence. Do not retain signal state only in process memory or derive a candle
+  indicator from a streamed last price.
 - The candle history cache is keyed by `instrumentUid`; current price comes from
   the `LastPrice` stream. Do not reintroduce a full candle-history request per
   tick.
@@ -68,6 +71,10 @@ Read the relevant README section before changing any of those contracts.
 - Reconciliation may enrich a legacy protection record only from a confirmed
   active broker stop order. Never infer that price locally or alter the broker
   order merely to populate display metadata.
+- Trade-event audit fields are evidence, not a replacement for a tick store:
+  entry context is bounded and free of secrets; MFE/MAE are written once at
+  close. A restored position has incomplete excursion history and must retain
+  null metrics rather than fabricated values.
 
 ## Contracts with the other repositories
 

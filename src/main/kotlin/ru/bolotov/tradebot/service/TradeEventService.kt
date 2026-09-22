@@ -40,7 +40,7 @@ class TradeEventService(
 
     /** Возвращает идентификатор стратегии, открывшей позицию. */
     fun findEntryStrategyId(positionId: String): String? =
-        findOpenEvent(positionId)?.let { event -> entryStrategyId(event.reason) }
+        findOpenEvent(positionId)?.let { event -> event.entryStrategyId ?: entryStrategyId(event.reason) }
 
     /** Восстанавливает незакрытые позиции из журнала событий. */
     fun findUnclosedPositions(): List<OpenPosition> =
@@ -58,7 +58,8 @@ class TradeEventService(
                     quantity = event.quantity,
                     lotSize = event.lotSize,
                     entryTime = event.processedAt ?: event.createdAt,
-                    entryStrategyId = entryStrategyId(event.reason)
+                    entryStrategyId = event.entryStrategyId ?: entryStrategyId(event.reason),
+                    excursionTrackingComplete = false
                 )
             }
             .toList()
@@ -142,7 +143,12 @@ class TradeEventService(
             pnl = null,
             eventType = EventType.OPEN,
             positionId = positionId,
-            status = EventStatus.PENDING
+            status = EventStatus.PENDING,
+            entryStrategyId = strategyId,
+            entryMarketRegime = marketRegime.name,
+            signalCandleKey = marketData.strategyCandleKey,
+            signalConfidence = BigDecimal.valueOf(signal.confidence),
+            entryContextJson = buildEntryContext(marketData)
         )
         return tradeEventRepository.save(event)
     }
@@ -235,6 +241,7 @@ class TradeEventService(
             return null
         }
 
+        val excursion = position.excursionAt(closePrice)
         val closeEvent = TradeEvent(
             instrumentId = position.instrumentId,
             instrumentName = position.instrumentName,
@@ -253,7 +260,10 @@ class TradeEventService(
             processedAt = Instant.now(),
             brokerOrderId = brokerOrderId,
             executionStatus = executionStatus,
-            brokerOrderState = brokerOrderState
+            brokerOrderState = brokerOrderState,
+            mfePercent = excursion?.mfePercent,
+            maePercent = excursion?.maePercent,
+            excursionComplete = position.excursionTrackingComplete
         )
         return tradeEventRepository.save(closeEvent)
     }
@@ -274,6 +284,30 @@ class TradeEventService(
 
     private fun entryStrategyId(reason: String): String? =
         STRATEGY_ID_PATTERN.find(reason)?.groupValues?.getOrNull(1)
+
+    /** Bounded numeric snapshot for replay; it deliberately excludes AI and broker payloads. */
+    private fun buildEntryContext(marketData: MarketData): String = buildString {
+        append('{')
+        appendJsonNumber("price", marketData.currentPrice)
+        appendJsonNumber("ema5", marketData.ema5)
+        appendJsonNumber("ema21", marketData.ema21)
+        appendJsonNumber("ema50", marketData.ema50)
+        appendJsonNumber("ema200", marketData.ema200)
+        appendJsonNumber("rsi", marketData.rsi?.let(BigDecimal::valueOf))
+        appendJsonNumber("macdHistogram", marketData.macd?.histogram)
+        appendJsonNumber("atr", marketData.atr)
+        appendJsonNumber("adx", marketData.adx?.let(BigDecimal::valueOf))
+        appendJsonNumber("vwap", marketData.vwap)
+        appendJsonNumber("volume", BigDecimal.valueOf(marketData.volume))
+        appendJsonNumber("averageVolume", BigDecimal.valueOf(marketData.avgVolume), last = true)
+        append('}')
+    }
+
+    private fun StringBuilder.appendJsonNumber(name: String, value: BigDecimal?, last: Boolean = false) {
+        append('"').append(name).append("\":")
+        append(value?.stripTrailingZeros()?.toPlainString() ?: "null")
+        if (!last) append(',')
+    }
 
     private companion object {
         val STRATEGY_ID_PATTERN = Regex("(?:^|;)\\s*strategyId=([^;\\s]+)")

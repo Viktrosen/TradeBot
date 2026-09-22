@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.awaitClose
@@ -713,7 +714,7 @@ class TradingBotService(
      * имеют приоритет над режимом рынка, стратегией и AI-фильтром.
      */
     private fun buildSignalFlow(marketData: MarketData) = flow {
-        val position = _openPositions.value[marketData.instrumentId]
+        val position = observePositionPrice(marketData.instrumentId, marketData.currentPrice)
         val riskCloseReason = position?.let {
             checkStopLossOrTakeProfit(it, marketData.currentPrice, marketData.atr)
         }
@@ -1051,6 +1052,21 @@ class TradingBotService(
         _openPositions.value[marketData.instrumentId]?.let { position ->
             eventPublisherService.publishPositionPriceUpdated(position, marketData.currentPrice)
         }
+    }
+
+    /**
+     * Captures a local tick for a tracked position without writing a high-rate
+     * audit record. The final MFE/MAE is persisted only when the position closes.
+     */
+    private fun observePositionPrice(instrumentId: String, price: BigDecimal): OpenPosition? {
+        var observedPosition: OpenPosition? = null
+        _openPositions.update { positions ->
+            val position = positions[instrumentId] ?: return@update positions
+            val observed = position.observePrice(price)
+            observedPosition = observed
+            positions + (instrumentId to observed)
+        }
+        return observedPosition
     }
 
     private suspend fun closePositionImmediately(

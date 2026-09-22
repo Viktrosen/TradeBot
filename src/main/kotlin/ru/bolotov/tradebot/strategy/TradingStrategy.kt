@@ -1,6 +1,7 @@
 package ru.bolotov.tradebot.strategy
 
 import java.math.BigDecimal
+import java.time.Instant
 
 interface TradingStrategy {
     val name: String
@@ -23,6 +24,17 @@ data class StrategyAiDetails(
     val trendDirection: String? = null,
     val upperBand: BigDecimal? = null,
     val lowerBand: BigDecimal? = null
+)
+
+/** Immutable closed M5 candle supplied to strategies without a broker SDK dependency. */
+data class StrategyCandle(
+    val key: String,
+    val time: Instant,
+    val open: BigDecimal,
+    val high: BigDecimal,
+    val low: BigDecimal,
+    val close: BigDecimal,
+    val volume: Long
 )
 
 /**
@@ -61,6 +73,7 @@ data class MarketData(
     val spread: BigDecimal,
     val volatility: Double,
     val strategyCandleKey: String? = null,
+    val closedCandles: List<StrategyCandle> = emptyList(),
     val candlestickPattern: ru.bolotov.tradebot.strategy.data.PatternResult? = null,
     // НОВОЕ: для Choppiness Index и ADX
     val high14: BigDecimal? = null,   // max price за 14 свечей

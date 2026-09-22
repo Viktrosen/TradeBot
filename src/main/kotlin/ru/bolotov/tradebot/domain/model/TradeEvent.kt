@@ -70,7 +70,31 @@ data class TradeEvent(
     var errorMessage: String? = null,
 
     @Column(name = "broker_order_state", columnDefinition = "TEXT")
-    var brokerOrderState: String? = null
+    var brokerOrderState: String? = null,
+
+    @Column(name = "entry_strategy_id")
+    var entryStrategyId: String? = null,
+
+    @Column(name = "entry_market_regime")
+    var entryMarketRegime: String? = null,
+
+    @Column(name = "signal_candle_key")
+    var signalCandleKey: String? = null,
+
+    @Column(name = "signal_confidence", precision = 5, scale = 4)
+    var signalConfidence: BigDecimal? = null,
+
+    @Column(name = "entry_context_json", columnDefinition = "TEXT")
+    var entryContextJson: String? = null,
+
+    @Column(name = "mfe_percent", precision = 12, scale = 6)
+    var mfePercent: BigDecimal? = null,
+
+    @Column(name = "mae_percent", precision = 12, scale = 6)
+    var maePercent: BigDecimal? = null,
+
+    @Column(name = "excursion_complete")
+    var excursionComplete: Boolean? = null
 )
 
 enum class OrderDirection {

@@ -171,7 +171,8 @@ class BrokerPortfolioSyncService(
                         entryTime = Instant.now().minusSeconds(3600),
                         entryStrategyId = tradeEventService.findEntryStrategyId(positionId),
                         stopLossPrice = stopLossPrice,
-                        atr = atr
+                        atr = atr,
+                        excursionTrackingComplete = false
                     )
 
                     tradeEventService.reconcileOpenEventFromBroker(

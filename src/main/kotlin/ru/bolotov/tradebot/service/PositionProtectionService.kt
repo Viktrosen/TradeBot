@@ -221,7 +221,14 @@ class PositionProtectionService(
                 instrumentId = position.instrumentId,
                 instrumentName = position.instrumentName,
                 positionId = position.positionId,
-                context = mapOf("stage" to decision.stage.name, "exitPrice" to decision.exitPrice)
+                context = mapOf(
+                    "previousStage" to previousStage.name,
+                    "stage" to decision.stage.name,
+                    "exitPrice" to decision.exitPrice,
+                    "currentPrice" to currentPrice,
+                    "atr" to atr,
+                    "side" to position.side.name
+                )
             )
         } else {
             protectionLogger.debug {
