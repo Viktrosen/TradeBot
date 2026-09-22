@@ -10,6 +10,7 @@ import org.springframework.http.HttpHeaders
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
 import ru.bolotov.tradebot.config.WebSecurityConfig
 import ru.bolotov.tradebot.service.CandleExportService
@@ -54,5 +55,21 @@ class InternalDiagnosticsControllerTest {
         mvc.perform(request().header(HttpHeaders.AUTHORIZATION, auth))
             .andExpect(status().isBadGateway)
             .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("private transport details"))))
+    }
+
+    @Test
+    fun `authenticated batch export is downloaded as uncached CSV`() {
+        `when`(service.export(listOf(uid), from, to)).thenReturn("instrument_uid,interval\n")
+
+        mvc.perform(
+            post("/internal/diagnostics/candles/batch.csv")
+                .header(HttpHeaders.AUTHORIZATION, auth)
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("""{"instrumentUids":["$uid"],"from":"$from","to":"$to"}""")
+        )
+            .andExpect(status().isOk)
+            .andExpect(content().contentType("text/csv;charset=UTF-8"))
+            .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"candles-m5-batch.csv\""))
+            .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
     }
 }

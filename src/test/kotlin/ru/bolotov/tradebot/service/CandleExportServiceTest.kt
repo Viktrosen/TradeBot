@@ -43,6 +43,36 @@ class CandleExportServiceTest {
     }
 
     @Test
+    fun `batch export is deterministic, deduplicated and contains every requested instrument`() {
+        val secondUid = UUID.fromString("b7485564-ed92-45fd-a724-1214aa202904")
+        val calls = mutableListOf<UUID>()
+        val service = CandleExportService(object : CandleHistoryReader {
+            override fun read(instrumentUid: UUID, from: Instant, to: Instant): List<HistoricalCandle> {
+                calls += instrumentUid
+                return listOf(candle(from), candle(from))
+            }
+        })
+
+        val csv = service.export(listOf(uid, secondUid, uid), from, from.plusSeconds(600))
+
+        assertEquals(setOf(uid, secondUid), calls.toSet())
+        assertEquals(3, csv.trimEnd().lines().size)
+        assertTrue(csv.contains(uid.toString()))
+        assertTrue(csv.contains(secondUid.toString()))
+    }
+
+    @Test
+    fun `batch export rejects an empty or oversized instrument list`() {
+        val service = CandleExportService(object : CandleHistoryReader {
+            override fun read(instrumentUid: UUID, from: Instant, to: Instant): List<HistoricalCandle> = emptyList()
+        })
+
+        assertThrows(IllegalArgumentException::class.java) { service.export(emptyList(), from, from.plusSeconds(300)) }
+        val tooMany = (1..51).map { UUID(0, it.toLong()) }
+        assertThrows(IllegalArgumentException::class.java) { service.export(tooMany, from, from.plusSeconds(300)) }
+    }
+
+    @Test
     fun `failure discards partial result and releases export permit`() {
         var fail = true
         val service = CandleExportService(object : CandleHistoryReader {
