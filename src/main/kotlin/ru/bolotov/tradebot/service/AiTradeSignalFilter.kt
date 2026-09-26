@@ -24,6 +24,7 @@ import ru.bolotov.tradebot.strategy.regime.StrategySelection
 import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.Semaphore
 
 private val aiFilterLogger = KotlinLogging.logger {}
 
@@ -31,28 +32,53 @@ private val aiFilterLogger = KotlinLogging.logger {}
 @Service
 class AiTradeSignalFilter(
     @Qualifier("geminiRestClient") private val restClient: RestClient,
+    @Qualifier("gigaChatRestClient") private val gigaChatRestClient: RestClient,
+    @Qualifier("gigaChatOAuthRestClient") private val gigaChatOAuthRestClient: RestClient,
     private val objectMapper: ObjectMapper,
     private val operationJournal: BotOperationJournal,
     @Value("\${ai.enabled:false}") private val enabled: Boolean,
+    @Value("\${ai.provider:gemini}") private val provider: String,
     @Value("\${ai.gemini.api-key:}") private val apiKey: String,
     @Value("\${ai.gemini.model:gemini-2.0-flash}") private val model: String,
+    @Value("\${ai.gigachat.api-key:}") private val gigaChatApiKey: String,
+    @Value("\${ai.gigachat.model:GigaChat-2}") private val gigaChatModel: String,
+    @Value("\${ai.gigachat.scope:GIGACHAT_API_PERS}") private val gigaChatScope: String,
     @Value("\${ai.min-confidence.buy:0.75}") private val minBuyConfidence: Double,
     @Value("\${ai.min-confidence.profit-sell:0.70}") private val minProfitSellConfidence: Double,
     @Value("\${ai.min-confidence.loss-sell:0.85}") private val minLossSellConfidence: Double
 ) {
     private val decisionParser = GeminiDecisionParser(objectMapper)
+    private val gigaChatDecisionParser = GigaChatDecisionParser(objectMapper)
     private val rateLimitLock = Any()
+    private val gigaChatTokenLock = Any()
+    private val gigaChatRequestSemaphore = Semaphore(1, true)
     private var rateLimitedUntil: Instant? = null
     private var rateLimitAttempt = 0
+    @Volatile private var gigaChatToken: AccessToken? = null
+
+    private val providerName: String = when (provider.trim().lowercase()) {
+        "gemini" -> "Gemini"
+        "gigachat" -> "GigaChat"
+        else -> "Неизвестный AI-провайдер ($provider)"
+    }
+    private val selectedModel: String get() = if (providerName == "GigaChat") gigaChatModel else model
+    private val isSupportedProvider: Boolean get() = providerName == "Gemini" || providerName == "GigaChat"
+    private val isConfigured: Boolean get() = when (providerName) {
+        "Gemini" -> apiKey.isNotBlank()
+        "GigaChat" -> gigaChatApiKey.isNotBlank()
+        else -> false
+    }
 
     init {
         when {
             !enabled -> aiFilterLogger.info { "AI-фильтр отключён настройкой AI_ENABLED" }
-            apiKey.isBlank() -> aiFilterLogger.error {
-                "AI-фильтр включён, но GEMINI_API_KEY не задан; сигналы открытия будут отклоняться"
+            !isSupportedProvider -> aiFilterLogger.error {
+                "AI-фильтр включён, но ai.provider=$provider не поддерживается; сигналы открытия будут отклоняться"
             }
-
-            else -> aiFilterLogger.info { "AI-фильтр включён, провайдер=Gemini, модель: $model" }
+            !isConfigured -> aiFilterLogger.error {
+                "AI-фильтр включён, но ключ для $providerName не задан; сигналы открытия будут отклоняться"
+            }
+            else -> aiFilterLogger.info { "AI-фильтр включён, провайдер=$providerName, модель: $selectedModel" }
         }
     }
 
@@ -65,8 +91,8 @@ class AiTradeSignalFilter(
         position: OpenPosition?
     ): AiFilterResult {
         if (!enabled) return AiFilterResult(approved = true)
-        if (apiKey.isBlank()) {
-            aiFilterLogger.error { "AI-фильтр включён, но GEMINI_API_KEY не задан; сигнал отклонён" }
+        if (!isSupportedProvider || !isConfigured) {
+            aiFilterLogger.error { "AI-фильтр включён, но $providerName не настроен; сигнал отклонён" }
             return AiFilterResult(approved = false)
         }
         if (isRateLimited()) return AiFilterResult(approved = false)
@@ -90,24 +116,24 @@ class AiTradeSignalFilter(
             logFailure(
                 marketData = marketData,
                 signal = signal,
-                message = "AI-фильтр: Gemini ограничил частоту запросов; сигнал отклонён",
-                context = mapOf("provider" to "Gemini", "model" to model, "httpStatus" to HTTP_TOO_MANY_REQUESTS)
+                message = "AI-фильтр: $providerName ограничил частоту запросов; сигнал отклонён",
+                context = mapOf("provider" to providerName, "model" to selectedModel, "httpStatus" to HTTP_TOO_MANY_REQUESTS)
             )
             AiFilterResult(approved = false)
         } catch (error: AiResponseFormatException) {
             logFailure(
                 marketData = marketData,
                 signal = signal,
-                message = "AI-фильтр: Gemini вернул ответ неподдерживаемого формата; сигнал отклонён",
+                message = "AI-фильтр: $providerName вернул ответ неподдерживаемого формата; сигнал отклонён",
                 consoleMessage = "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.cause?.message ?: error.message}; " +
-                    "HTTP=${error.statusCode}, провайдер=Gemini, модель=$model, " +
+                    "HTTP=${error.statusCode}, провайдер=$providerName, модель=$selectedModel, " +
                     "finishReason=${error.finishReason ?: "<не указан>"}, " +
                     "ответ AI (усечён): ${error.contentPreview}",
                 error = error.cause ?: error,
                 context = mapOf(
-                    "provider" to "Gemini",
-                    "model" to model,
+                    "provider" to providerName,
+                    "model" to selectedModel,
                     "httpStatus" to error.statusCode,
                     "finishReason" to error.finishReason
                 )
@@ -118,23 +144,32 @@ class AiTradeSignalFilter(
             logFailure(
                 marketData = marketData,
                 signal = signal,
-                message = "AI-фильтр: Gemini недоступен; сигнал отклонён",
-                consoleMessage = "AI-фильтр: Gemini недоступен для ${signal.actionDescription} ${marketData.instrumentName}; " +
+                message = "AI-фильтр: $providerName недоступен; сигнал отклонён",
+                consoleMessage = "AI-фильтр: $providerName недоступен для ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина=${rootCause.javaClass.simpleName}: " +
-                    "${rootCause.message ?: "<не указана>"}; модель=$model",
+                    "${rootCause.message ?: "<не указана>"}; модель=$selectedModel",
                 error = rootCause,
-                context = mapOf("provider" to "Gemini", "model" to model)
+                context = mapOf("provider" to providerName, "model" to selectedModel)
+            )
+            AiFilterResult(approved = false)
+        } catch (error: AiProviderBusyException) {
+            logFailure(
+                marketData = marketData,
+                signal = signal,
+                message = "AI-фильтр: $providerName занят другой проверкой; сигнал отклонён",
+                error = null,
+                context = mapOf("provider" to providerName, "model" to selectedModel, "reason" to "concurrency_limit")
             )
             AiFilterResult(approved = false)
         } catch (error: Exception) {
             logFailure(
                 marketData = marketData,
                 signal = signal,
-                message = "AI-фильтр: проверка Gemini завершилась ошибкой; сигнал отклонён",
+                message = "AI-фильтр: проверка $providerName завершилась ошибкой; сигнал отклонён",
                 consoleMessage = "AI-фильтр: не удалось проверить ${signal.actionDescription} ${marketData.instrumentName}; " +
                     "сигнал отклонён. Причина: ${error.message ?: error.javaClass.simpleName}",
                 error = error,
-                context = mapOf("provider" to "Gemini", "model" to model)
+                context = mapOf("provider" to providerName, "model" to selectedModel)
             )
             AiFilterResult(approved = false)
         }
@@ -148,6 +183,21 @@ class AiTradeSignalFilter(
         position: OpenPosition?
     ): AiDecision {
         val requestId = UUID.randomUUID().toString()
+        return if (providerName == "GigaChat") {
+            requestGigaChatDecision(requestId, marketData, signal, selection, regimeDecision, position)
+        } else {
+            requestGeminiDecision(requestId, marketData, signal, selection, regimeDecision, position)
+        }
+    }
+
+    private fun requestGeminiDecision(
+        requestId: String,
+        marketData: MarketData,
+        signal: Signal,
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
+        position: OpenPosition?
+    ): AiDecision {
         val requestBody = createRequest(marketData, signal, selection, regimeDecision, position)
         aiFilterLogger.debug {
             "AI-фильтр: Gemini запрос, requestId=$requestId, " +
@@ -173,7 +223,7 @@ class AiTradeSignalFilter(
                         throw AiRateLimitException()
                     }
                     if (response.statusCode.isError) {
-                        throw AiProviderException(response.statusCode.value(), responseBody)
+                        throw AiProviderException("Gemini", response.statusCode.value(), responseBody)
                     }
                     GeminiResponse(response.statusCode.value(), responseBody)
                 }
@@ -190,6 +240,96 @@ class AiTradeSignalFilter(
                 cause = error
             )
         }
+    }
+
+    /** Личный GigaChat допускает один запрос; конкурирующий сигнал не ждёт и безопасно отклоняется. */
+    private fun requestGigaChatDecision(
+        requestId: String,
+        marketData: MarketData,
+        signal: Signal,
+        selection: StrategySelection,
+        regimeDecision: MarketRegimeDecision,
+        position: OpenPosition?
+    ): AiDecision {
+        if (!gigaChatRequestSemaphore.tryAcquire()) throw AiProviderBusyException("GigaChat уже обрабатывает другой запрос")
+        try {
+            val contextJson = objectMapper.writeValueAsString(AiTradeContext.from(marketData, signal, selection, regimeDecision, position))
+            val requestBody = mapOf(
+                "model" to gigaChatModel,
+                "messages" to listOf(
+                    mapOf("role" to "system", "content" to SYSTEM_PROMPT),
+                    mapOf("role" to "user", "content" to contextJson)
+                ),
+                "temperature" to 1.0,
+                "max_tokens" to MAX_COMPLETION_TOKENS,
+                "stream" to false
+            )
+            aiFilterLogger.debug {
+                "AI-фильтр: GigaChat запрос, requestId=$requestId, инструмент=${marketData.instrumentName}, " +
+                    "стратегия=${selection.id}, модель=$gigaChatModel, endpoint=/chat/completions, " +
+                    "temperature=1.0, maxTokens=$MAX_COMPLETION_TOKENS, stream=false"
+            }
+            val response = gigaChatRestClient.post()
+                .uri("/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer ${gigaChatAccessToken()}")
+                .header("User-Agent", GIGA_CHAT_USER_AGENT)
+                .body(requestBody)
+                .exchange { _, clientResponse ->
+                    clientResponse.body.bufferedReader().use { reader ->
+                        val responseBody = reader.readText()
+                        aiFilterLogger.debug {
+                            "AI-фильтр: GigaChat ответ, requestId=$requestId, инструмент=${marketData.instrumentName}, " +
+                                "модель=$gigaChatModel, HTTP=${clientResponse.statusCode.value()}, размер ответа=${responseBody.length} символов"
+                        }
+                        if (clientResponse.statusCode.value() == HTTP_TOO_MANY_REQUESTS) throw AiRateLimitException()
+                        if (clientResponse.statusCode.isError) {
+                            throw AiProviderException("GigaChat", clientResponse.statusCode.value(), responseBody)
+                        }
+                        GigaChatResponse(clientResponse.statusCode.value(), responseBody)
+                    }
+                } ?: error("GigaChat вернул пустой ответ")
+            return try {
+                gigaChatDecisionParser.parse(objectMapper.readTree(response.body))
+            } catch (error: Exception) {
+                throw AiResponseFormatException(
+                    statusCode = response.statusCode,
+                    contentPreview = gigaChatResponseContentPreview(response.body),
+                    finishReason = gigaChatFinishReason(response.body),
+                    cause = error
+                )
+            }
+        } finally {
+            gigaChatRequestSemaphore.release()
+        }
+    }
+
+    /** OAuth-токен GigaChat действует 30 минут; обновляем его за минуту до истечения. */
+    private fun gigaChatAccessToken(): String = synchronized(gigaChatTokenLock) {
+        gigaChatToken?.takeIf { it.expiresAt.isAfter(Instant.now().plusSeconds(TOKEN_REFRESH_SAFETY_SECONDS)) }
+            ?.let { return it.value }
+        val responseBody = gigaChatOAuthRestClient.post()
+            .uri("/api/v2/oauth")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .accept(MediaType.APPLICATION_JSON)
+            .header("RqUID", UUID.randomUUID().toString())
+            .header("Authorization", "Basic $gigaChatApiKey")
+            .body("scope=$gigaChatScope")
+            .exchange { _, clientResponse ->
+                clientResponse.body.bufferedReader().use { reader ->
+                    val body = reader.readText()
+                    if (clientResponse.statusCode.isError) {
+                        throw AiProviderException("GigaChat OAuth", clientResponse.statusCode.value(), body)
+                    }
+                    body
+                }
+            } ?: error("GigaChat OAuth вернул пустой ответ")
+        val response = objectMapper.readTree(responseBody)
+        val token = response.path("access_token").asText("")
+        require(token.isNotBlank()) { "GigaChat OAuth не вернул access_token" }
+        val expiresAt = response.path("expires_at").asLong(0).takeIf { it > 0 }
+            ?.let(Instant::ofEpochSecond) ?: Instant.now().plusSeconds(DEFAULT_TOKEN_TTL_SECONDS)
+        return AccessToken(token, expiresAt).also { gigaChatToken = it }.value
     }
 
     /**
@@ -216,7 +356,8 @@ class AiTradeSignalFilter(
 
     /** Ограничивает служебное значение одной строкой и маскирует ключ даже при его отражении API. */
     private fun diagnosticValue(node: JsonNode): String = node.asText("")
-        .let { if (apiKey.isNotBlank()) it.replace(apiKey, "<скрыто>") else it }
+        .let { value -> sequenceOf(apiKey, gigaChatApiKey).filter(String::isNotBlank)
+            .fold(value) { masked, key -> masked.replace(key, "<скрыто>") } }
         .replace(Regex("\\s+"), " ")
         .take(RESPONSE_PREVIEW_MAX_LENGTH)
 
@@ -268,6 +409,15 @@ class AiTradeSignalFilter(
         decisionParser.finishReason(objectMapper.readTree(responseBody))
     }.getOrNull()
 
+    private fun gigaChatResponseContentPreview(responseBody: String): String = runCatching {
+        gigaChatDecisionParser.finalText(objectMapper.readTree(responseBody))
+    }.getOrDefault("<не удалось разобрать ответ>")
+        .replace(Regex("\\s+"), " ").take(RESPONSE_PREVIEW_MAX_LENGTH).ifBlank { "<пусто>" }
+
+    private fun gigaChatFinishReason(responseBody: String): String? = runCatching {
+        gigaChatDecisionParser.finishReason(objectMapper.readTree(responseBody))
+    }.getOrNull()
+
     private fun logRequest(marketData: MarketData, signal: Signal, strategy: TradingStrategy) {
         operationJournal.info(
             eventType = BotOperationEventType.AI_REQUEST,
@@ -276,7 +426,12 @@ class AiTradeSignalFilter(
                 "уверенность сигнала=${signal.confidence}",
             instrumentId = marketData.instrumentId,
             instrumentName = marketData.instrumentName,
-            context = mapOf("strategy" to strategy.name, "signal" to signal.direction.name)
+            context = mapOf(
+                "provider" to providerName,
+                "model" to selectedModel,
+                "strategy" to strategy.name,
+                "signal" to signal.direction.name
+            )
         )
     }
 
@@ -297,6 +452,8 @@ class AiTradeSignalFilter(
             instrumentId = marketData.instrumentId,
             instrumentName = marketData.instrumentName,
             context = mapOf(
+                "provider" to providerName,
+                "model" to selectedModel,
                 "signal" to signal.direction.name,
                 "approved" to approved,
                 "confidence" to decision.confidence,
@@ -333,7 +490,7 @@ class AiTradeSignalFilter(
             rateLimitedUntil = null
             return false
         }
-        aiFilterLogger.debug { "AI-фильтр временно не вызывает Gemini до $blockedUntil после HTTP 429" }
+        aiFilterLogger.debug { "AI-фильтр временно не вызывает $providerName до $blockedUntil после HTTP 429" }
         true
     }
 
@@ -351,7 +508,7 @@ class AiTradeSignalFilter(
             delaySeconds to until
         }
         aiFilterLogger.warn {
-            "AI-фильтр получил HTTP 429 от Gemini; пауза $waitSeconds с, запросы к Gemini приостановлены до $blockedUntil"
+            "AI-фильтр получил HTTP 429 от $providerName; пауза $waitSeconds с, запросы приостановлены до $blockedUntil"
         }
     }
 
@@ -389,6 +546,9 @@ class AiTradeSignalFilter(
         const val HTTP_TOO_MANY_REQUESTS = 429
         const val RESPONSE_PREVIEW_MAX_LENGTH = 400
         const val GEMINI_API_KEY_HEADER = "x-goog-api-key"
+        const val GIGA_CHAT_USER_AGENT = "TradeBot/1.0"
+        const val TOKEN_REFRESH_SAFETY_SECONDS = 60L
+        const val DEFAULT_TOKEN_TTL_SECONDS = 1_740L
         val RATE_LIMIT_BACKOFF_SECONDS = listOf(10L, 20L, 40L, 80L, 160L, 300L)
         val DECISION_JSON_SCHEMA = mapOf(
             "type" to "object",
@@ -457,14 +617,20 @@ class AiTradeSignalFilter(
 
 private class AiRateLimitException : RuntimeException("Gemini вернул HTTP 429")
 
+private class AiProviderBusyException(message: String) : RuntimeException(message)
+
 private data class GeminiResponse(
     val statusCode: Int,
     val body: String
 )
 
+private data class GigaChatResponse(val statusCode: Int, val body: String)
+
+private data class AccessToken(val value: String, val expiresAt: Instant)
+
 /** Содержит безопасно усечённый ответ Gemini при кодах HTTP, отличных от 429. */
-private class AiProviderException(statusCode: Int, responseBody: String) : RuntimeException(
-    "Gemini вернул HTTP $statusCode: ${responseBody.replace(Regex("\\s+"), " ").take(400)}"
+private class AiProviderException(provider: String, statusCode: Int, responseBody: String) : RuntimeException(
+    "$provider вернул HTTP $statusCode: ${responseBody.replace(Regex("\\s+"), " ").take(400)}"
 )
 
 private class AiResponseFormatException(
